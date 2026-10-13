@@ -3,6 +3,11 @@
 
 export const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 
+/** The endpoint: `TYPESAFE_ENDPOINT` when set (a local mock in end-to-end tests), else ENDPOINT. */
+export function endpoint(): string {
+  return process.env.TYPESAFE_ENDPOINT?.trim() || ENDPOINT;
+}
+
 export type Question =
   | { type: "noul"; instructions: string; criteria?: { true: string; false: string } }
   | { type: "choice"; instructions: string; criteria: Record<string, string> }
@@ -37,7 +42,7 @@ export async function askJev(
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   let response: Response;
   try {
-    response = await (options.fetch ?? fetch)(ENDPOINT, {
+    response = await (options.fetch ?? fetch)(endpoint(), {
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({ model: options.model ?? "jev-latest", state, questions }),

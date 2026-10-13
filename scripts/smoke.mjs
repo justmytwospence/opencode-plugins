@@ -4,10 +4,11 @@
 // points isolated XDG directories at .smoke/home so the live configuration and data are never
 // touched, lists every component directory under `plugins`, starts `opencode serve`, and polls
 // the plugin list until every component's server half is active. Components without a server
-// half (CLI-only) are skipped here; load those with `node scripts/smoke.mjs --tui` which opens
-// the TUI in a detached tmux session for a manual look at /plugins.
+// half (CLI-only) are skipped here. `--tui` instead opens the TUI in a detached tmux session,
+// opens /plugins, and fails when a plugin failed or a component's CLI half is missing;
+// `--keep` leaves that session running for a look.
 //
-//   node scripts/smoke.mjs [component ...] [--tui]
+//   node scripts/smoke.mjs [component ...] [--tui [--keep]]
 //   OPENCODE2_VERSION=2.0.24 (default) picks the scratch release.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
@@ -34,6 +35,7 @@ if (!existsSync(binary)) {
   const install = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--ignore-scripts', `@opencode/cli@${version}`], { cwd: smoke, stdio: 'inherit' });
   if (install.status !== 0 || !existsSync(binary)) throw new Error(`could not install @opencode/cli@${version} into .smoke/`);
 }
+if (args.includes('--install-only')) process.exit(0);
 
 const home = join(smoke, 'home');
 const project = join(smoke, 'project');
@@ -53,11 +55,30 @@ const env = {
 
 if (tui) {
   const session = 'opencode-plugins-smoke';
-  spawnSync('tmux', ['-L', session, 'kill-server']);
-  spawnSync('tmux', ['-L', session, 'new-session', '-d', '-s', session, '-x', '160', '-y', '45',
-    'env', ...Object.entries(env).filter(([k]) => k.startsWith('XDG_')).map(([k, v]) => `${k}=${v}`), binary, '--standalone', realpathSync(project)]);
-  console.log(`TUI running: tmux -L ${session} attach -t ${session}   (type /plugins; kill with tmux -L ${session} kill-server)`);
-  process.exit(0);
+  const tmux = (...a) => spawnSync('tmux', ['-L', session, ...a], { encoding: 'utf8' });
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  tmux('kill-server');
+  tmux('new-session', '-d', '-s', session, '-x', '200', '-y', '60',
+    'env', ...Object.entries(env).filter(([k]) => k.startsWith('XDG_')).map(([k, v]) => `${k}=${v}`), binary, '--standalone', realpathSync(project));
+  await sleep(15_000);
+  tmux('send-keys', '-t', session, '/plugins');
+  await sleep(1_000);
+  tmux('send-keys', '-t', session, 'Enter');
+  await sleep(2_000);
+  const screen = tmux('capture-pane', '-p', '-t', session).stdout;
+  const lines = screen.split('\n').map(l => l.trim()).filter(Boolean);
+  const start = lines.findIndex(l => l.startsWith('Plugins'));
+  const listed = lines.slice(start, lines.findIndex((l, i) => i > start && l.startsWith('ctrl+a')) + 1);
+  console.log(listed.join('\n'));
+  const expected = components.filter(c => existsSync(join(c.dir, 'tui.ts'))).map(c => `${c.name.replace(/^opencode-/, '')}.tui`);
+  const missing = expected.filter(id => !listed.some(l => l.split(/\s+/).includes(id)));
+  const failures = listed.filter(l => /failed/.test(l));
+  if (process.argv.includes('--keep')) console.log(`TUI running: tmux -L ${session} attach -t ${session}   (kill with tmux -L ${session} kill-server)`);
+  else tmux('kill-server');
+  if (missing.length) console.error(`missing CLI halves: ${missing.join(', ')}`);
+  if (failures.length) console.error(`failed: ${failures.join(' | ')} (open with --keep, select it, Enter shows the error)`);
+  console.log(missing.length || failures.length ? 'FAIL' : `PASS ${expected.length} CLI halves loaded in OpenCode ${version}`);
+  process.exit(missing.length || failures.length ? 1 : 0);
 }
 
 const port = await new Promise(res => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => res(port)); }); });
