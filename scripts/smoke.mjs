@@ -11,7 +11,7 @@
 //   node scripts/smoke.mjs [component ...] [--tui [--keep]]
 //   OPENCODE2_VERSION=2.0.24 (default) picks the scratch release.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,8 +37,11 @@ if (!existsSync(binary)) {
 }
 if (args.includes('--install-only')) process.exit(0);
 
-const home = join(smoke, 'home');
-const project = join(smoke, 'project');
+// Each run gets its own home, project and tmux socket, so parallel runs never collide.
+const run = join(smoke, 'runs', `smoke-${process.pid}`);
+const home = join(run, 'home');
+const project = join(run, 'project');
+process.on('exit', () => { if (!process.argv.includes('--keep')) rmSync(run, { recursive: true, force: true }); });
 for (const dir of ['config/opencode', 'data', 'state', 'cache']) mkdirSync(join(home, dir), { recursive: true });
 mkdirSync(project, { recursive: true });
 if (!existsSync(join(project, '.git'))) spawnSync('git', ['init', '-q'], { cwd: project });
@@ -54,7 +57,7 @@ const env = {
 };
 
 if (tui) {
-  const session = 'opencode-plugins-smoke';
+  const session = `opencode-plugins-smoke-${process.pid}`;
   const tmux = (...a) => spawnSync('tmux', ['-L', session, ...a], { encoding: 'utf8' });
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   tmux('kill-server');

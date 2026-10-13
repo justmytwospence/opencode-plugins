@@ -10,7 +10,7 @@
 // The built-in `anthropic` provider is pointed at the mock (its catalog model
 // anthropic/claude-opus-4-6 by default: variants low, medium, high, max, E2E_MODEL to change), so provider-specific code paths
 // run as they would against Anthropic. Requests land in
-// .smoke/e2e/requests.jsonl; `--json` prints them in full instead of a summary.
+// .smoke/runs/e2e-<pid>/requests.jsonl (or --dir); `--json` prints them in full instead of a summary.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -19,12 +19,14 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MODEL = process.env.E2E_MODEL ?? 'anthropic/claude-opus-4-6';
 const smoke = join(root, '.smoke');
-const e2e = join(smoke, 'e2e');
+// Each run gets its own directory (kept for inspection; .smoke/ is gitignored), so parallel runs
+// never collide. --dir picks it.
+const e2e = process.argv.includes('--dir') ? resolve(process.argv[process.argv.indexOf('--dir') + 1]) : join(smoke, 'runs', `e2e-${process.pid}`);
 const dash = process.argv.indexOf('--');
 const args = dash >= 0 ? process.argv.slice(2, dash) : process.argv.slice(2);
 const prompt = dash >= 0 ? process.argv.slice(dash + 1).join(' ') : 'say hello';
 const opt = name => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
-const flags = new Set(['--script', '--variant', '--config']);
+const flags = new Set(['--script', '--variant', '--config', '--dir']);
 const only = args.filter((a, i) => !a.startsWith('--') && !flags.has(args[i - 1]));
 
 const binary = join(smoke, 'node_modules', '@opencode', `cli-${process.platform}-${process.arch}`, 'bin', 'opencode');
@@ -98,5 +100,5 @@ for (const r of lines) {
   const keys = Object.keys(b).filter(k => !['messages', 'system', 'tools'].includes(k));
   console.log(`${r.method} ${r.path} messages=${b.messages?.length ?? 0} tools=${b.tools?.length ?? 0} ${keys.map(k => `${k}=${JSON.stringify(b[k])}`).join(' ')}`);
 }
-console.log(`exit ${run.status}${run.error ? ` (${run.error.message})` : ''}`);
+console.log(`exit ${run.status}${run.error ? ` (${run.error.message})` : ''}   run directory: ${e2e}`);
 process.exitCode = run.status ?? 1;
