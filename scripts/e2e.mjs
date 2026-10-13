@@ -37,7 +37,8 @@ if (!existsSync(binary)) {
 
 const components = readdirSync(join(root, 'packages'), { withFileTypes: true })
   .filter(e => e.isDirectory() && only.includes(e.name))
-  .map(e => realpathSync(join(root, 'packages', e.name)));
+  .map(e => realpathSync(join(root, 'packages', e.name)))
+  .filter(dir => existsSync(join(dir, 'index.ts')));
 
 rmSync(e2e, { recursive: true, force: true });
 const home = join(e2e, 'home');

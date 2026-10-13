@@ -1,25 +1,30 @@
 {
-  "name": "opencode-git-status",
+  "name": "opencode-status-footer",
   "version": "0.1.0",
-  "description": "opencode shows the checkout's git status beside the prompt: branch, conflicts, uncommitted changes, ahead and behind.",
+  "description": "OpenCode footer additions: compact Git marks beside the branch, and Claude and Codex subscription windows in the sidebar.",
   "type": "module",
   "license": "MIT",
   "exports": {
-    "./tui": "./src/tui.ts"
+    ".": "./index.ts",
+    "./tui": "./tui.ts",
+    "./rpc": "./src/rpc.ts"
   },
   "files": [
+    "index.ts",
+    "tui.ts",
     "src"
   ],
   "keywords": [
     "opencode",
     "opencode-plugin",
     "git",
-    "status"
+    "status",
+    "limits"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/justmytwospence/opencode-plugins",
-    "directory": "packages/opencode-git-status"
+    "directory": "packages/opencode-status-footer"
   },
   "scripts": {
     "check": "npm run typecheck && npm test",
@@ -27,11 +32,13 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.0",
-    "@opentui/core": ">=0.4.5",
-    "@opentui/solid": ">=0.4.5",
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
     "@types/node": "^22.20.4",
-    "solid-js": "^1.9.0",
+    "solid-js": "1.9.12",
     "typescript": "^5.9.0",
     "vitest": "^5.0.2"
   }

@@ -45,7 +45,10 @@ process.on('exit', () => { if (!process.argv.includes('--keep')) rmSync(run, { r
 for (const dir of ['config/opencode', 'data', 'state', 'cache']) mkdirSync(join(home, dir), { recursive: true });
 mkdirSync(project, { recursive: true });
 if (!existsSync(join(project, '.git'))) spawnSync('git', ['init', '-q'], { cwd: project });
-writeFileSync(join(home, 'config/opencode/opencode.json'), JSON.stringify({ plugins: components.map(c => c.dir) }, null, 2));
+writeFileSync(join(home, 'config/opencode/opencode.json'), JSON.stringify({ plugins: server.map(c => c.dir) }, null, 2));
+// A local directory with only a CLI half never reaches the terminal through opencode.json.
+const cliOnly = components.filter(c => !existsSync(join(c.dir, 'index.ts')) && existsSync(join(c.dir, 'tui.ts')));
+if (cliOnly.length) writeFileSync(join(home, 'config/opencode/cli.json'), JSON.stringify({ plugins: cliOnly.map(c => c.dir) }, null, 2));
 
 const env = {
   ...process.env,

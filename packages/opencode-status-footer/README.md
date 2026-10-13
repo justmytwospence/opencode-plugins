@@ -1,15 +1,26 @@
-# opencode-git-status
+# opencode-status-footer
 
-An opencode TUI plugin that shows the checkout's git status to the right of the
-prompt, on the home screen and in sessions:
+An [OpenCode 2](https://opencode.ai) plugin that adds what OpenCode's own footer and sidebar lack,
+in the spirit of [pi-status-footer](https://github.com/justmytwospence/pi-plugins/tree/main/packages/pi-status-footer).
+OpenCode already shows the directory, branch, context use and session cost, so this adds two
+things:
 
-```
-feat/x * ↑1 ↓3 !
-```
+- **Git marks** right after the footer's `dir:branch`, on the home screen and in sessions:
+
+  ```
+  ~/code/app:feat/x  * ↑1 ↓3 !
+  ```
+
+- **Subscription windows** in the session sidebar, under OpenCode's context and cost (example):
+
+  ```
+  Claude 5h 42% 2h13m · week 81% 3d
+  ```
+
+## Git marks
 
 | Mark | Color | Meaning |
 | --- | --- | --- |
-| branch | text | or `detached:<sha7>` |
 | `*` | warning | any staged, unstaged, untracked or conflicted work |
 | `↑N` | success | commits ahead of upstream |
 | `↓N` | error | commits behind upstream |
@@ -17,8 +28,7 @@ feat/x * ↑1 ↓3 !
 
 The suffix uses single spaces in the order `* ↑N ↓N !`, with `!` always last.
 There are no file counts, worktree/tracking labels, separators or clean/zero
-markers. A clean checkout shows only its branch identity, including linked
-worktrees. Detached HEAD shows `detached:<sha7>`. Nothing shows outside Git.
+markers. A clean checkout shows nothing beyond OpenCode's own branch. Nothing shows outside Git.
 Ignored files do not set `*`.
 
 Missing or pruned upstream refs omit divergence arrows without implying in-sync.
@@ -35,19 +45,36 @@ the plugin never fetches. Ahead/behind are requested explicitly even when
 `status.aheadBehind` is disabled. Linked worktrees are identified by comparing
 the Git directory with the common Git directory, not by their path names.
 
+The marks follow the format every prompt and footer of these suites share (`branch * ↑N ↓N !`),
+without the branch, which OpenCode's footer already shows.
+
+## Subscription windows
+
+The server half reads the rate-limit headers of every response from the `anthropic` provider
+(Anthropic's unified `5h`/`7d` windows) and the `chatgpt`/`openai` providers (Codex's
+`x-codex-*`), headers only, never bodies. Until a response has said anything, Claude's windows
+come from Claude Code's shared usage cache, `oauth-usage.json` under `$CLAUDE_STATUSLINE_CACHE_DIR`
+(default `~/.cache/claude-statusline/`), which Claude Code's status line and pi-status-footer
+keep fresh; this plugin only reads it and never makes account requests. Each window shows percent
+**used** and the time to its reset; warning color from 70%, error from 90%. A reading older than
+10 minutes, or past its reset, is dropped rather than shown stale. API-key users get no
+subscription headers and see nothing.
+
 ## Install
 
-TUI-only: list it in `~/.config/opencode/tui.jsonc`, pinned to a commit.
+In `opencode.jsonc`, pinned to a suite commit (the terminal half loads with it):
 
 ```jsonc
-{
-  "plugin": ["opencode-git-status@github:justmytwospence/opencode-git-status#<commit>"]
-}
+"plugins": [
+  "opencode-status-footer@github:justmytwospence/opencode-plugins#<commit>::path:packages/opencode-status-footer"
+]
 ```
 
-It renders before opencode-marimo and opencode-cache-guard in the same slot.
+Replaces the retired opencode-git-status. Tested with OpenCode 2.0.24.
 
 ## Development
+
+Part of [opencode-plugins](https://github.com/justmytwospence/opencode-plugins); see its README.
 
 ```sh
 npm ci && npm run check

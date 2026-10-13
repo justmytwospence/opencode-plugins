@@ -17,6 +17,7 @@ const components = readdirSync(resolve(root, 'packages'), { withFileTypes: true 
 const identical = [
   ['opencode-auto-effort', 'opencode-next-prompt', 'opencode-tool-gate'].map(p => `packages/${p}/src/jev.ts`),
   ['opencode-auto-effort', 'opencode-next-prompt', 'opencode-tool-gate'].map(p => `packages/${p}/src/settings.ts`),
+  ['opencode-auto-effort', 'opencode-status-footer'].map(p => `packages/${p}/src/limits.ts`),
 ];
 for (const group of identical) {
   const expected = readFileSync(resolve(root, group[0]), 'utf8');
