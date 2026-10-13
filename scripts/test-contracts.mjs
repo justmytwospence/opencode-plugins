@@ -18,7 +18,7 @@ const identical = [
   ['opencode-auto-effort', 'opencode-next-prompt', 'opencode-tool-gate'].map(p => `packages/${p}/src/jev.ts`),
   ['opencode-auto-effort', 'opencode-next-prompt', 'opencode-tool-gate'].map(p => `packages/${p}/src/settings.ts`),
   ['opencode-auto-effort', 'opencode-status-footer'].map(p => `packages/${p}/src/limits.ts`),
-  ['opencode-herdr', 'opencode-marimo'].map(p => `packages/${p}/src/herdr-rpc.ts`),
+  ['opencode-bg', 'opencode-herdr', 'opencode-marimo'].map(p => `packages/${p}/src/herdr-rpc.ts`),
 ];
 for (const group of identical) {
   const expected = readFileSync(resolve(root, group[0]), 'utf8');
@@ -77,6 +77,6 @@ for (const name of components) {
 const catalog = resolve(root, 'site/src/data/plugins.mjs');
 if (existsSync(catalog)) {
   const { plugins } = await import(catalog);
-  assert.deepEqual(new Set(plugins.map(p => p.id)), new Set(components), 'public catalog matches packages/');
+  assert.deepEqual(new Set(plugins.map(p => p.name)), new Set(components), 'public catalog matches packages/');
 }
 console.log(`PASS ${components.length} components: metadata, licenses, runtime independence, unique ids, helper parity${existsSync(catalog) ? ', catalog' : ''}`);
