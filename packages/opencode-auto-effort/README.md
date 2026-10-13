@@ -1,9 +1,9 @@
 # opencode-auto-effort
 
-An [opencode](https://opencode.ai) plugin that sets the effort (opencode's model variant) for each
+An [OpenCode 2](https://opencode.ai) plugin that sets the effort (OpenCode's model variant) for each
 prompt you send. [Jev](https://docs.typesafe.ai), TypeSafe's System One model, rates how much
 careful reasoning the request needs, in about 200 ms before the turn starts. The port of
-[pi-auto-effort](https://github.com/justmytwospence/pi-auto-effort) and
+[pi-auto-effort](https://github.com/justmytwospence/pi-plugins/tree/main/packages/pi-auto-effort) and
 [claude-auto-effort](https://github.com/justmytwospence/claude-auto-effort), with the same questions
 and policy.
 
@@ -27,36 +27,37 @@ agent's `variant`) is the ceiling; `low` is the floor. A level the model has no 
 the next one down. Prompts without a variant, or to agents not in `agents` (default `build`, so
 planners and scouts keep their own), are left alone.
 
-**Cache-safe.** The level is set on the user message in `chat.message`, before it is saved, and
-every model request of that turn reads it from there, so tool follow-ups never change it. Without
-`TYPESAFE_API_KEY`, or when Jev fails or takes over 1.5 s, the level holds.
+**Cache-safe.** The session's `prompt` hook notes each new prompt; the first model request of the
+turn (the `context` hook) asks Jev and fixes the level, and every model request of that turn,
+tool follow-ups included, runs at it. The level is applied by overlaying that variant's settings
+on the request (and its headers on `model.request`), so the variant you picked stays selected and
+shown. Without `TYPESAFE_API_KEY`, or when Jev fails or takes over 1.5 s, the level holds.
 
-A toast shows `effort: low (auto)` when the level changes; each decision is logged under the
-`auto-effort` service (`opencode run --print-logs`).
+A toast shows `effort: low (auto)` when the level changes (the server half emits an RPC event,
+the terminal half shows it); each decision is logged to the server log with an `[auto-effort]`
+prefix.
 
 ## Install
 
-In `opencode.jsonc`, pinned to a commit:
+In `opencode.jsonc`, pinned to a suite commit (the terminal half loads with it):
 
 ```jsonc
-"plugin": [
-  "opencode-auto-effort@github:justmytwospence/opencode-auto-effort#<commit>"
+"plugins": [
+  "opencode-auto-effort@github:justmytwospence/opencode-plugins#<commit>::path:packages/opencode-auto-effort"
 ]
 ```
 
-Needs `TYPESAFE_API_KEY` in opencode's environment. Tested with opencode 1.18.29.
+Needs `TYPESAFE_API_KEY` in OpenCode's environment. Tested with OpenCode 2.0.24.
 
 ## Limits
 
 When an Anthropic or Codex subscription window (5h, weekly) is on track to run out before it resets, auto-effort lowers the variant one or two steps below what the request would otherwise get.
 
-**Sources.** opencode's plugin API has no response hook, so the plugin wraps `globalThis.fetch`
-once per process (composing over any wrapper already there, such as anthropic-billing-guard's) and
-reads the response headers of `api.anthropic.com` (Anthropic's unified `5h`/`7d` subscription
-headers) and `chatgpt.com` (Codex's `x-codex-*`, when they appear). It never reads bodies or request
-headers; the last plugin instance to dispose restores the fetch it wrapped. Models of provider
-`anthropic` use the Anthropic readings, `openai`/`openai-codex`/`codex` the Codex ones; other
-providers are never limited, nor are API keys (no subscription headers). There is no polling: a
+**Sources.** The session's `http.response` hook reads the response headers of `api.anthropic.com`
+(Anthropic's unified `5h`/`7d` subscription headers) and `chatgpt.com` (Codex's `x-codex-*`, when
+they appear). It never reads bodies or request headers. Models of provider `anthropic` use the
+Anthropic readings, `chatgpt`/`openai`/`openai-codex`/`codex` the Codex ones; other providers are
+never limited, nor are API keys (no subscription headers). There is no polling: a
 new process has no reading until its first response.
 
 **Privacy.** Only response headers are used; no auth files are read, and the readings stay in
@@ -108,7 +109,7 @@ Settings, in the shared file:
 ```
 
 On by default; `"limits": { "enabled": false }` in the shared `auto-effort.json` turns it off for
-every port, and `/auto-effort off` turns it off with the rest for the session. An invalid value
+every port. An invalid value
 falls back to its default.
 
 ## Settings
@@ -129,8 +130,8 @@ keys are optional; the defaults:
 }
 ```
 
-opencode-only overrides go in the plugin's options in `opencode.jsonc` (the second element of the
-plugin tuple, `["opencode-auto-effort@...", { "toast": false }]`) or in
+OpenCode-only overrides go in the plugin's options in `opencode.jsonc` (`{ "package":
+"opencode-auto-effort@...", "options": { "toast": false } }`) or in
 `<project>/.opencode/auto-effort.json`. The layers merge in this order, later winning, objects
 deep-merged and arrays and scalars replaced: built-in defaults, `~/.config/agents/auto-effort.json`,
 the `opencode.jsonc` options, `<project>/.agents/auto-effort.json`,
@@ -139,17 +140,9 @@ the next prompt without a restart; a missing or invalid file is ignored.
 
 ## Development
 
+Part of [opencode-plugins](https://github.com/justmytwospence/opencode-plugins); see its README.
+
 ```sh
-npm install
+npm ci
 npm run check   # typecheck and tests
 ```
-
-Try a local checkout in place of the pin: opencode dedupes plugins by package name and the later
-config wins, so
-
-```sh
-printf '{"plugin":["opencode-auto-effort@file:'"$PWD"'"]}' > /tmp/try.json
-OPENCODE_CONFIG=/tmp/try.json opencode
-```
-
-links this checkout instead of the pinned commit.

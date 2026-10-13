@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
-import { DEFAULT_OPTIONS, NAME, createHooks, currentOptions, fit, resolveOptions } from "../src/index.ts";
-import { effortState } from "../src/request.ts";
+import { effortState, history } from "../src/request.ts";
+import { DEFAULT_OPTIONS, NAME, createHooks, currentOptions, fit, resolveOptions } from "../src/server.ts";
+import { followUp, host, turn } from "./harness.ts";
 
 const root = mkdtempSync(path.join(tmpdir(), "auto-effort-"));
 process.env.XDG_CONFIG_HOME = path.join(root, "config");
@@ -11,68 +12,74 @@ process.env.XDG_CONFIG_HOME = path.join(root, "config");
 const jevBody = (score: number, ack = 0.02, confidence = 0.9) =>
   JSON.stringify({ model: "jev-test", answers: { depth: { type: "score", score, confidence }, ack: { type: "noul", noul: ack } } });
 
-function setup(script: number[], opts: { variants?: string[]; key?: string } = {}) {
-  process.env.TYPESAFE_API_KEY = opts.key ?? "k";
+function jev(script: number[], key = "k") {
+  process.env.TYPESAFE_API_KEY = key;
   const queue = [...script];
   const sent: unknown[] = [];
-  const toasts: string[] = [];
   const fetchImpl = (async (_url: string, init: RequestInit) => {
     sent.push(JSON.parse(String(init.body)));
     return new Response(jevBody(queue.shift() ?? 1));
   }) as unknown as typeof fetch;
-  const client = {
-    config: {
-      providers: async () => ({
-        data: { providers: [{ id: "anthropic", models: { opus: { variants: Object.fromEntries((opts.variants ?? ["low", "medium", "high", "xhigh", "max"]).map((v) => [v, {}])) } } }] },
-      }),
-    },
-    session: { messages: async () => ({ data: [] }) },
-    app: { log: async () => ({}) },
-    tui: { showToast: async ({ body }: { body: { message: string } }) => (toasts.push(body.message), {}) },
-  };
-  return { client: client as never, fetchImpl, sent, toasts };
-}
-
-async function prompt(hooks: Awaited<ReturnType<typeof createHooks>>, text: string, variant: string | undefined, agent = "build") {
-  const message = { id: "m", sessionID: "s", role: "user", agent, model: { providerID: "anthropic", modelID: "opus", variant } };
-  await hooks["chat.message"]!(
-    { sessionID: "s", agent, model: { providerID: "anthropic", modelID: "opus" } },
-    { message: message as never, parts: [{ type: "text", text } as never] },
-  );
-  return message.model.variant;
+  return { fetchImpl, sent };
 }
 
 test("effort follows the requests, capped at the session's variant", async () => {
-  const s = setup([0, 3]);
-  const hooks = await createHooks(s.client, DEFAULT_OPTIONS, s.fetchImpl);
-  expect(await prompt(hooks, "what does ls -a do?", "high")).toBe("low");
-  expect(await prompt(hooks, "redesign the sync engine", "high")).toBe("high");
-  expect(s.toasts).toEqual(["effort: low (auto)", "effort: high (auto)"]);
+  const j = jev([0, 3]);
+  const h = host();
+  const hooks = createHooks(h.host, DEFAULT_OPTIONS, j.fetchImpl);
+  expect(await turn(hooks, "what does ls -a do?", "high")).toBe("low");
+  expect(await turn(hooks, "redesign the sync engine", "high")).toBe("high");
+  expect(h.toasts.map((t) => t.message)).toEqual(["effort: low (auto)", "effort: high (auto)"]);
+});
+
+test("every model request of a turn runs at the turn's level, with one Jev call", async () => {
+  const j = jev([0]);
+  const hooks = createHooks(host().host, DEFAULT_OPTIONS, j.fetchImpl);
+  expect(await turn(hooks, "what does ls -a do?", "high")).toBe("low");
+  expect(await followUp(hooks, "high")).toBe("low");
+  expect(await followUp(hooks, "high")).toBe("low");
+  expect(j.sent).toHaveLength(1);
+});
+
+test("a variant picked since the decision is respected until the next prompt", async () => {
+  const j = jev([0]);
+  const hooks = createHooks(host().host, DEFAULT_OPTIONS, j.fetchImpl);
+  expect(await turn(hooks, "what does ls -a do?", "high")).toBe("low");
+  expect(await followUp(hooks, "xhigh")).toBe("xhigh");
+});
+
+test("a variant's headers ride on the turn's model requests", async () => {
+  const j = jev([0]);
+  const hooks = createHooks(host().host, DEFAULT_OPTIONS, j.fetchImpl);
+  expect(await turn(hooks, "what does ls -a do?", "high")).toBe("low");
+  const event = { sessionID: "s", agent: "build", headers: {} as Record<string, string> };
+  hooks.headers(event);
+  expect(event.headers).toEqual({ "x-effort": "low" });
 });
 
 test("other agents, no variant, and an empty prompt are left alone", async () => {
-  const s = setup([0, 0, 0]);
-  const hooks = await createHooks(s.client, DEFAULT_OPTIONS, s.fetchImpl);
-  expect(await prompt(hooks, "list files", "xhigh", "plan")).toBe("xhigh");
-  expect(await prompt(hooks, "list files", undefined)).toBeUndefined();
-  expect(await prompt(hooks, "   ", "high")).toBe("high");
-  expect(s.sent).toEqual([]);
+  const j = jev([0, 0, 0]);
+  const hooks = createHooks(host().host, DEFAULT_OPTIONS, j.fetchImpl);
+  expect(await turn(hooks, "list files", "xhigh", "plan")).toBe("xhigh");
+  expect(await turn(hooks, "list files", undefined)).toBeUndefined();
+  expect(await turn(hooks, "   ", "high")).toBe("high");
+  expect(j.sent).toEqual([]);
 });
 
 test("without an API key the level holds at the ceiling", async () => {
-  const s = setup([0], { key: "" });
-  const hooks = await createHooks(s.client, DEFAULT_OPTIONS, s.fetchImpl);
-  expect(await prompt(hooks, "list files", "xhigh")).toBe("xhigh");
-  expect(s.sent).toEqual([]);
+  const j = jev([0], "");
+  const hooks = createHooks(host().host, DEFAULT_OPTIONS, j.fetchImpl);
+  expect(await turn(hooks, "list files", "xhigh")).toBe("xhigh");
+  expect(j.sent).toEqual([]);
 });
 
 test("a level the model lacks falls to the next one down", async () => {
   expect(fit("medium", "high", ["low", "high"])).toBe("low");
   expect(fit("medium", "high", ["high"])).toBe("high");
   expect(fit("xhigh", "max", undefined)).toBe("xhigh");
-  const s = setup([1], { variants: ["low", "high"] });
-  const hooks = await createHooks(s.client, DEFAULT_OPTIONS, s.fetchImpl);
-  expect(await prompt(hooks, "fix the typo in README", "high")).toBe("low");
+  const j = jev([1]);
+  const hooks = createHooks(host(["low", "high"]).host, DEFAULT_OPTIONS, j.fetchImpl);
+  expect(await turn(hooks, "fix the typo in README", "high")).toBe("low");
 });
 
 test("options merge over the defaults", () => {
@@ -88,31 +95,41 @@ test("the shared settings files are read on each prompt, so edits apply without 
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify({ enabled: false }));
   utimesSync(file, 1_000, 1_000);
-  const s = setup([0, 0]);
-  const hooks = await createHooks(s.client, () => currentOptions({ toast: false }, project), s.fetchImpl);
-  expect(await prompt(hooks, "what does ls -a do?", "high")).toBe("high");
-  expect(s.sent).toEqual([]);
+  const j = jev([0, 0]);
+  const h = host();
+  const hooks = createHooks(h.host, () => currentOptions({ toast: false }, project), j.fetchImpl);
+  expect(await turn(hooks, "what does ls -a do?", "high")).toBe("high");
+  expect(j.sent).toEqual([]);
 
   writeFileSync(file, JSON.stringify({ enabled: true }));
   utimesSync(file, 2_000, 2_000);
-  expect(await prompt(hooks, "what does ls -a do?", "high")).toBe("low");
-  expect(s.sent).toHaveLength(1);
-  expect(s.toasts).toEqual([]);
+  expect(await turn(hooks, "what does ls -a do?", "high")).toBe("low");
+  expect(j.sent).toHaveLength(1);
+  expect(h.toasts).toEqual([]);
 });
 
 test("state: previous prompts and what the last run did", () => {
   const s = effortState("now this", [
-    { info: { role: "user" }, parts: [{ type: "text", text: "first" }] },
+    { role: "user", content: [{ type: "text", text: "first" }] },
     {
-      info: { role: "assistant" },
-      parts: [
-        { type: "tool", tool: "edit", state: { status: "completed" } },
-        { type: "tool", tool: "bash", state: { status: "error" } },
+      role: "assistant",
+      content: [
+        { type: "tool-call", name: "edit" },
+        { type: "tool-call", name: "shell" },
         { type: "text", text: "done editing" },
       ],
     },
+    { role: "tool", content: [{ type: "tool-result", name: "edit", result: { type: "text" } }] },
+    { role: "tool", content: [{ type: "tool-result", name: "shell", result: { type: "error" } }] },
   ]);
   expect(s.previous_requests).toEqual(["first"]);
   expect(s.last_outcome).toBe("done editing");
   expect(s.signals).toEqual({ last_run_errors: 1, files_edited: 1, tool_calls: 2 });
+});
+
+test("history drops the prompt being decided from the end of the request's messages", () => {
+  const first = { role: "user", content: [{ type: "text", text: "first" }] };
+  const now = { role: "user", content: [{ type: "text", text: "now this" }] };
+  expect(history("now this", [first, now])).toEqual([first]);
+  expect(history("now this", [first])).toEqual([first]);
 });

@@ -1,13 +1,17 @@
 {
   "name": "opencode-auto-effort",
   "version": "0.1.0",
-  "description": "Sets opencode's effort (variant) per prompt: Jev rates how demanding it is, smoothed, capped at the variant you chose.",
+  "description": "Sets OpenCode's effort (variant) per prompt: Jev rates how demanding it is, smoothed, capped at the variant you chose.",
   "type": "module",
   "license": "MIT",
   "exports": {
-    "./server": "./src/index.ts"
+    ".": "./index.ts",
+    "./tui": "./tui.ts",
+    "./rpc": "./src/rpc.ts"
   },
   "files": [
+    "index.ts",
+    "tui.ts",
     "src"
   ],
   "keywords": [
@@ -26,8 +30,13 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.0",
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "^0.5.14",
+    "@opentui/solid": "^0.5.14",
     "@types/node": "^22.20.4",
+    "solid-js": "^1.9.16",
     "typescript": "^5.9.0",
     "vitest": "^5.0.2"
   }

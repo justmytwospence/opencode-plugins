@@ -23,7 +23,7 @@ OpenCode loads a component's terminal half automatically. Components that only h
 npm test                                             # suite contracts
 for dir in packages/*/; do (cd "$dir" && npm ci); done
 npm run check                                        # every component's typecheck and tests
-scripts/smoke.sh                                     # load every component in a scratch OpenCode 2
+node scripts/smoke.mjs                               # load every component in a scratch OpenCode 2
 ```
 
 Develop components under `packages/<name>/`. Keep each one independently installable; sibling integrations go through OpenCode's plugin RPC. See `AGENTS.md`.

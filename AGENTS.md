@@ -4,11 +4,21 @@ This repository is the development source for the OpenCode 2 plugin suite. Add o
 
 Components target the OpenCode 2 plugin API only (`@opencode/plugin`, `Plugin.define({ id, setup })`; CLI halves from `@opencode/plugin/tui` behind a `./tui` export). Do not add V1 (`@opencode-ai/plugin`) entry points.
 
+## Component layout (OpenCode 2 loader facts, verified against 2.0.24)
+
+- Entry points live at the package root: `index.ts` (server half) and `tui.ts` (CLI half), each a one-line re-export from `src/`. A local directory plugin (`plugins try`, the smoke test) resolves only `<dir>/server.ts`, `<dir>/index.ts` and `<dir>/tui.ts`, not package.json exports; a Git install resolves `<name>/server`, `<name>` and `<name>/tui` through exports. So `package.json` has `"exports": { ".": "./index.ts", "./tui": "./tui.ts" }` (plus `"./rpc": "./src/rpc.ts"` when the component publishes an RPC contract), and both work.
+- Server half: `import type { Plugin } from "@opencode/plugin"` only (type imports), and `export default { id, setup } satisfies Plugin.Plugin`. No runtime dependencies: a Git install then needs no `npm install` of `@opencode/plugin` and its Effect stack. `@opencode/plugin`, `@opencode/client` and friends are devDependencies, for types and tests.
+- CLI half: static imports of `@opencode/plugin/tui`, `solid-js`, `solid-js/store`, `@opentui/core` and `@opentui/solid/jsx-runtime`. The host rewrites these static specifiers to its own runtime modules, also inside a Git install; dynamic `import(variable)` is not rewritten. No `.tsx`: JSX compiled by the host imports `@opentui/solid`, which a Git install cannot resolve. Build elements with `jsx("text", { ... })` from `@opentui/solid/jsx-runtime`, using getters (`get children() { ... }`) for reactive props.
+- Plugin ids are the component name without the `opencode-` prefix (`auto-effort`), and `<id>.tui` for the CLI half. Ids are unique across the suite.
+- Server and CLI halves talk through plugin RPC (`Rpc` from `@opencode/plugin/rpc`, contract in `src/rpc.ts`), never through files, ports or globals. Server code cannot show toasts; emit an RPC event and let the CLI half show it.
+- Settings: shared `~/.config/agents/<name>.json`, then plugin options (`ctx.options`), then `<project>/.agents/<name>.json` and `<project>/.opencode/<name>.json` (settings.ts).
+- Tests use vitest with fakes of the plugin context; nothing in tests calls Jev or a model.
+
 ## Checks
 
 - Root: `npm test` for suite contracts (metadata, licenses, runtime independence, unique plugin ids, helper parity, docs catalog).
 - Components: `npm ci` in a component directory, then `npm run check` there (typecheck and tests), or root `npm run check` for every component.
-- Load smoke: `scripts/smoke.sh` runs a scratch OpenCode 2 binary with isolated XDG directories and loads every component from this checkout. It never touches the live configuration.
+- Load smoke: `node scripts/smoke.mjs [component ...]` installs a scratch OpenCode 2 into `.smoke/`, runs it with isolated XDG directories and checks that every server half loads and activates. `--tui` opens the TUI in a detached tmux session for a look at `/plugins`. It never touches the live configuration.
 - Docs: `cd site && npm ci && npm run check && npm run build`. The site is static, separately deployed, and must not affect runtime installation.
 
 All npm installations follow the machine's release-age policy. Never bypass it. Never run anything that makes paid classifier (Jev) calls in tests without explicit authorization; tests use stubs.

@@ -23,16 +23,19 @@ export const QUESTIONS: Record<string, Question> = {
 
 const EDIT_TOOLS = new Set(["edit", "write", "patch", "apply_patch", "multiedit"]);
 
-/** The part of an opencode message (`{ info, parts }`) this reads. */
+/**
+ * The part of a model message (OpenCode 2's `Message` from `@opencode/ai`, as the session's
+ * `context` hook sees it) this reads.
+ */
 export interface MessageLike {
-  info: { role: string };
-  parts: readonly { type: string; text?: string; synthetic?: boolean; tool?: string; state?: { status?: string } }[];
+  role: string;
+  content: readonly { type: string; text?: string; name?: string; result?: { type: string } }[];
 }
 
-/** The text a user typed, or an assistant wrote: text parts that are not synthetic. */
+/** The text a user typed, or an assistant wrote: its text parts. */
 export function messageText(message: MessageLike): string {
-  return message.parts
-    .filter((p) => p.type === "text" && !p.synthetic && typeof p.text === "string")
+  return message.content
+    .filter((p) => p.type === "text" && typeof p.text === "string")
     .map((p) => p.text)
     .join("\n")
     .trim();
@@ -45,7 +48,7 @@ export function messageText(message: MessageLike): string {
 export function effortState(prompt: string, messages: readonly MessageLike[]): Record<string, unknown> {
   const prompts: number[] = [];
   messages.forEach((m, i) => {
-    if (m.info.role === "user" && messageText(m)) prompts.push(i);
+    if (m.role === "user" && messageText(m)) prompts.push(i);
   });
   const runStart = prompts.at(-1);
   const previous = prompts.slice(-2).map((i) => clip(messageText(messages[i]!), 1_000));
@@ -53,14 +56,17 @@ export function effortState(prompt: string, messages: readonly MessageLike[]): R
   const signals = { last_run_errors: 0, files_edited: 0, tool_calls: 0 };
   if (runStart !== undefined) {
     for (const m of messages.slice(runStart + 1)) {
-      if (m.info.role !== "assistant") continue;
-      const text = messageText(m);
-      if (text) lastOutcome = text;
-      for (const part of m.parts) {
-        if (part.type !== "tool") continue;
-        signals.tool_calls++;
-        if (part.state?.status === "error") signals.last_run_errors++;
-        else if (EDIT_TOOLS.has(part.tool ?? "")) signals.files_edited++;
+      if (m.role === "assistant") {
+        const text = messageText(m);
+        if (text) lastOutcome = text;
+        for (const part of m.content) {
+          if (part.type !== "tool-call") continue;
+          signals.tool_calls++;
+          if (EDIT_TOOLS.has(part.name ?? "")) signals.files_edited++;
+        }
+      }
+      for (const part of m.content) {
+        if (part.type === "tool-result" && part.result?.type === "error") signals.last_run_errors++;
       }
     }
   }
@@ -70,6 +76,15 @@ export function effortState(prompt: string, messages: readonly MessageLike[]): R
     last_outcome: lastOutcome ? clip(lastOutcome, 1_500) : "(none)",
     signals,
   };
+}
+
+/**
+ * The messages before the prompt being decided: `messages` as the first model request of a turn
+ * sees them ends with that prompt, which is dropped.
+ */
+export function history(prompt: string, messages: readonly MessageLike[]): readonly MessageLike[] {
+  const last = messages.at(-1);
+  return last && last.role === "user" && messageText(last) === prompt.trim() ? messages.slice(0, -1) : messages;
 }
 
 export function clip(text: string, max: number): string {
