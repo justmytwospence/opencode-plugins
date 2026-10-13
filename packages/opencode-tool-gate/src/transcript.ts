@@ -1,25 +1,24 @@
-// The transcript context Jev judges a call in, read from opencode's session messages
-// (`client.session.messages`): the user's recent requests, the agent's latest explanation, and
-// the agent's words beside a tool call. Ported from pi-tool-gate's transcript module, which read
-// pi's session branch.
+// The transcript context Jev judges a call in, read from OpenCode's session context
+// (`ctx.session.context`): the user's recent requests, the agent's latest explanation, the agent's
+// message the newest request replies to, and the agent's words beside a tool call. Ported from
+// pi-tool-gate's transcript module, which read pi's session branch.
 
-/** The part of an opencode message (`{ info, parts }`) this reads. */
+/** The parts of an OpenCode session message (`SessionMessageInfo`) this reads. */
 export interface MessageLike {
-  info: { role: string };
-  parts: readonly {
-    type: string;
-    text?: string;
-    synthetic?: boolean;
-    tool?: string;
-    callID?: string;
-    state?: { status?: string; input?: unknown };
-  }[];
+  id?: string;
+  type: string;
+  /** User and synthetic messages: the text typed. */
+  text?: string;
+  /** Assistant messages: text, reasoning and tool parts. */
+  content?: readonly { type: string; text?: string; id?: string; name?: string }[];
 }
 
-/** The text a user typed, or an assistant wrote: text parts that are not synthetic. */
+/** The visible text of a message: a user's prompt, or an assistant's text parts. */
 export function messageText(message: MessageLike): string {
-  return message.parts
-    .filter((p) => p.type === "text" && !p.synthetic && typeof p.text === "string")
+  if (message.type === "user") return (message.text ?? "").trim();
+  if (message.type !== "assistant") return "";
+  return (message.content ?? [])
+    .filter((p) => p.type === "text" && typeof p.text === "string")
     .map((p) => p.text)
     .join("\n")
     .trim();
@@ -33,10 +32,28 @@ export function recentTexts(messages: readonly MessageLike[]): { user: string; a
     const message = messages[i] as MessageLike;
     const text = messageText(message);
     if (!text) continue;
-    if (!user && message.info.role === "user") user = text;
-    if (!assistant && !user && message.info.role === "assistant") assistant = text;
+    if (!user && message.type === "user") user = text;
+    if (!assistant && !user && message.type === "assistant") assistant = text;
   }
   return { user, assistant };
+}
+
+/**
+ * The agent's last message before the newest user message: what a short reply like "yes" or
+ * "do it" answers.
+ */
+export function agentBeforeLatestUser(messages: readonly MessageLike[]): string {
+  let seenUser = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as MessageLike;
+    const text = messageText(message);
+    if (!text) continue;
+    if (message.type === "user") {
+      if (seenUser) return "";
+      seenUser = true;
+    } else if (seenUser && message.type === "assistant") return text;
+  }
+  return "";
 }
 
 export function clip(text: string, max: number): string {
@@ -52,19 +69,35 @@ export function recentUserMessages(messages: readonly MessageLike[], count: numb
   const out: string[] = [];
   for (let i = messages.length - 1; i >= 0 && out.length < count; i--) {
     const message = messages[i] as MessageLike;
-    if (message.info.role !== "user") continue;
+    if (message.type !== "user") continue;
     const text = messageText(message);
     if (text) out.unshift(text);
   }
   return out;
 }
 
-/** Text of the assistant message that issued tool call `callID` (the agent's words beside it). */
-export function callerText(messages: readonly MessageLike[], callID: string): string {
+/** Readable reasoning in an assistant message (encrypted-only reasoning gives nothing). */
+export function reasoningText(message: MessageLike): string {
+  if (message.type !== "assistant") return "";
+  return (message.content ?? [])
+    .filter((p) => p.type === "reasoning" && typeof p.text === "string" && p.text.trim())
+    .map((p) => (p.text as string).trim())
+    .join("\n\n");
+}
+
+/**
+ * The agent's words beside tool call `callID` (or in the message `messageID`): the visible text
+ * of the assistant message that issued it, or, when it wrote none (models often make their case
+ * only in reasoning), its reasoning.
+ */
+export function callerText(messages: readonly MessageLike[], call: { messageID?: string; callID?: string }): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i] as MessageLike;
-    if (message.info.role !== "assistant") continue;
-    if (message.parts.some((p) => p.type === "tool" && p.callID === callID)) return messageText(message);
+    if (message.type !== "assistant") continue;
+    const issued =
+      (call.messageID !== undefined && message.id === call.messageID) ||
+      (call.callID !== undefined && (message.content ?? []).some((p) => p.type === "tool" && p.id === call.callID));
+    if (issued) return messageText(message) || reasoningText(message);
   }
   return "";
 }

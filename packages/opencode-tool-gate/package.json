@@ -1,13 +1,17 @@
 {
   "name": "opencode-tool-gate",
   "version": "0.1.0",
-  "description": "Auto-approves opencode tool calls: fixed rules for the clear cases, Jev for the gray zone, one push-back to the agent, then it asks you. Checks project rules.",
+  "description": "Auto-approves OpenCode tool calls: fixed rules for the clear cases, Jev for the gray zone, one push-back to the agent, then OpenCode asks you. Claude Code permission modes per session; project rules.",
   "type": "module",
   "license": "MIT",
   "exports": {
-    "./server": "./src/index.ts"
+    ".": "./index.ts",
+    "./tui": "./tui.ts",
+    "./rpc": "./src/rpc.ts"
   },
   "files": [
+    "index.ts",
+    "tui.ts",
     "src"
   ],
   "keywords": [
@@ -26,8 +30,13 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.0",
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
     "@types/node": "^22.20.4",
+    "solid-js": "1.9.12",
     "typescript": "^5.9.0",
     "vitest": "^5.0.2"
   }

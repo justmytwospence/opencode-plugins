@@ -7,7 +7,6 @@ import { sharedConfigDir } from "../src/settings.ts";
 
 const root = mkdtempSync(path.join(tmpdir(), "rules-"));
 process.env.XDG_CONFIG_HOME = path.join(root, "config");
-process.env.PI_CODING_AGENT_DIR = path.join(root, "pi-agent");
 
 function write(file: string, text: string) {
   mkdirSync(path.dirname(file), { recursive: true });

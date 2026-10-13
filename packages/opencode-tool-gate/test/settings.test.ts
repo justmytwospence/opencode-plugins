@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
-import { DEFAULT_OPTIONS, NAME, currentOptions, resolveOptions } from "../src/index.ts";
+import { DEFAULT_OPTIONS, NAME, currentOptions, resolveOptions } from "../src/gate.ts";
 import { deepMerge, loadSettings, readJson, sharedConfigDir } from "../src/settings.ts";
 
 const root = mkdtempSync(path.join(tmpdir(), "settings-"));
