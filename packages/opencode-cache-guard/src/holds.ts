@@ -1,24 +1,12 @@
-// A held prompt and the ways through it. The server half holds a prompt (chat.message throws) and
-// records it in the session's state file; the TUI half offers the choices and acts on them. The two
-// halves talk through small files in the state directory, since a TUI plugin has no channel to the
-// server plugin and the server can only nudge the TUI (`tui.command.execute`).
-//
-//   <session>.json         the snapshot, with `held` while a prompt is held and `muted` once asking stopped
-//   <session>.confirm.json the TUI (or the Enter-again fallback) authorised this text: the server lets it through once
-//   <session>.compact.json guidance for the next compaction of the session, consumed by the compacting hook
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
-
-import { type ColdReason, type Price, type Settings, choiceCosts, compactionFocus, formatCost, formatTokens } from "./core.js";
-import { JEV_KEY_URL } from "./lean.js";
+// A held prompt and the ways through it. The terminal half holds a prompt before it is submitted
+// (a keymap layer over Enter takes the text out of the prompt box with OpenCode's own stash) and
+// offers these choices; the server half runs the compactions the choices ask for.
+import { type ColdReason, type Price, type Settings, choiceCosts, compactionFocus, formatCost, formatTokens } from "./core.ts";
+import { JEV_KEY_URL } from "./lean.ts";
 
 export interface HeldPrompt {
-  /** The prompt as typed (text parts only). */
+  /** The prompt as typed. */
   text: string;
-  /** How the TUI sent it, so a resend goes out the same way. */
-  agent?: string;
-  model?: { providerID: string; modelID: string };
-  variant?: string;
   at: number;
   /** Why the next request misses, worded. */
   line: string;
@@ -27,38 +15,18 @@ export interface HeldPrompt {
   tokens: number;
   /** Dollars at list prices; absent for a model with no known prices. */
   costs?: { send: number; compact: number };
-  /** Distinguishes holds of the same text, so the TUI opens one dialog per hold. */
-  seq: number;
 }
 
-export function heldPrompt(input: {
-  text: string;
-  agent?: string;
-  model?: { providerID: string; modelID: string };
-  variant?: string;
-  now: number;
-  line: string;
-  reason: ColdReason;
-  tokens: number;
-  price?: Price;
-  ttlMs: number;
-}): HeldPrompt {
+export function heldPrompt(input: { text: string; now: number; line: string; reason: ColdReason; tokens: number; price?: Price; ttlMs: number }): HeldPrompt {
   return {
     text: input.text,
-    agent: input.agent,
-    model: input.model,
-    variant: input.variant,
     at: input.now,
     line: input.line,
     reason: input.reason.kind,
     tokens: input.tokens,
     costs: input.price ? choiceCosts(input.tokens, input.price, input.ttlMs) : undefined,
-    seq: input.now,
   };
 }
-
-/** The TUI command the server publishes when it holds a prompt, so the dialog opens at once. */
-export const HOLD_COMMAND = "cache-guard.held";
 
 export type Choice = "keep" | "jev" | "compact" | "fresh" | "send" | "mute";
 
@@ -69,7 +37,7 @@ export interface ChoiceOption {
 }
 
 /** Under the cold-cache question while Jev is not set up (and not turned off). */
-export const JEV_TIP = `Tip: set TYPESAFE_API_KEY (${JEV_KEY_URL}) for Jev, which continues on a one-second summary for ~$0; "jev": { "enabled": false } in cache-guard.json hides this.`;
+export const JEV_TIP = `Tip: set TYPESAFE_API_KEY (${JEV_KEY_URL}) for Jev, which compacts on a one-second summary for ~$0; "jev": { "enabled": false } in cache-guard.json hides this.`;
 
 /** The dialog's title: why the prompt is held, and the Jev tip when Jev is wanted but missing. */
 export function choiceTitle(held: HeldPrompt, jev: { ready: boolean; tip: boolean } = { ready: false, tip: false }): string {
@@ -77,20 +45,23 @@ export function choiceTitle(held: HeldPrompt, jev: { ready: boolean; tip: boolea
   return !jev.ready && jev.tip ? `${line}\n${JEV_TIP}` : line;
 }
 
-/** The dialog's options, Keep first so a reflexive Enter is safe; Jev's, when it is set up, before Compact first. */
+/**
+ * The dialog's options in Pi's order: sending first, so Enter sends as if nothing had asked (Esc
+ * keeps the prompt); Jev's compaction, when it is set up, before the summary; Keep last.
+ */
 export function choiceOptions(held: HeldPrompt, jev: { ready: boolean } = { ready: false }): ChoiceOption[] {
   const size = formatTokens(held.tokens);
   const send = held.costs ? ` (~${formatCost(held.costs.send)})` : "";
   const compact = held.costs ? ` (~${formatCost(held.costs.compact)})` : "";
   return [
-    { value: "keep", title: "Keep the prompt", description: "Leave it in the box; nothing is sent." },
+    { value: "send", title: `Send anyway${send}`, description: `Write the ${size}-token history to the cache again.` },
+    { value: "mute", title: "Send, and stop asking in this session", description: "Same as sending, and no more holds here." },
     ...(jev.ready
-      ? [{ value: "jev" as const, title: "Continue on Jev's summary in a new session (~1s, ~$0)", description: `Jev picks what the ${size}-token history still needs; the summary is written in code, no LLM reads the history.` }]
+      ? [{ value: "jev" as const, title: "Compact with Jev, then send (~1s, ~$0)", description: `Jev picks what the ${size}-token history still needs; the summary is written in code, no LLM reads the history.` }]
       : []),
     { value: "compact", title: `Compact first, then send${compact}`, description: `Summarize the ${size}-token history once, uncached, and continue on the summary.` },
     { value: "fresh", title: "Start fresh with this prompt", description: "A new session with the same agent and model; the history stays here." },
-    { value: "send", title: `Send anyway${send}`, description: `Write the ${size}-token history to the cache again.` },
-    { value: "mute", title: "Send, and stop asking in this session", description: "Same as sending, and no more holds here." },
+    { value: "keep", title: "Keep the prompt", description: "Leave it in the box; nothing is sent." },
   ];
 }
 
@@ -103,74 +74,24 @@ export interface GuidanceOption {
 }
 
 export const GUIDANCE_OPTIONS: GuidanceOption[] = [
-  { value: "default", title: "Default summary", description: "opencode's own compaction prompt." },
+  { value: "default", title: "Default summary", description: "OpenCode's own compaction prompt." },
   { value: "focus", title: "Focus on this prompt", description: "Keep what the held prompt needs, drop the rest." },
   { value: "custom", title: "Write guidance...", description: "Your own instructions for the summary." },
 ];
 
-/** What the compacting hook adds to the compaction prompt for a choice; undefined adds nothing. */
+/** What the compaction hook adds to the summarizer's instructions for a choice; undefined adds nothing. */
 export function guidanceText(kind: Guidance["kind"], held: HeldPrompt, custom?: string): string | undefined {
   if (kind === "focus") return compactionFocus(held.text);
   if (kind === "custom") return custom?.trim() || undefined;
   return undefined;
 }
 
-export function confirmFile(dir: string, sessionID: string): string {
-  return path.join(dir, `${sessionID}.confirm.json`);
-}
-
-export function guidanceFile(dir: string, sessionID: string): string {
-  return path.join(dir, `${sessionID}.compact.json`);
-}
-
-function writeWhole(file: string, value: unknown): void {
-  const temporary = `${file}.${process.pid}.tmp`;
-  writeFileSync(temporary, JSON.stringify(value));
-  renameSync(temporary, file);
-}
-
-/** Authorises one send of `text` in the session (the TUI's choice, or the Enter-again fallback). */
-export function writeConfirm(dir: string, sessionID: string, text: string, mute = false): void {
-  writeWhole(confirmFile(dir, sessionID), { text: text.trim(), at: Date.now(), mute });
-}
-
 /**
- * Takes the session's confirmation if it authorises `text`: true when it did (the file is removed
- * either way, so a stale one never lets a later prompt through). `mute` comes back with it.
+ * Whether a prompt about to be submitted is one to hold: real text (not a slash command, which
+ * is not a model request; `/compact` and `/new` are ways out) while the settings allow asking.
  */
-export function takeConfirm(dir: string, sessionID: string, text: string, now: number, windowMs: number): { confirmed: boolean; mute: boolean } {
-  const file = confirmFile(dir, sessionID);
-  let record: { text?: string; at?: number; mute?: boolean } | undefined;
-  try {
-    record = JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return { confirmed: false, mute: false };
-  }
-  rmSync(file, { force: true });
-  const confirmed = record?.text === text.trim() && typeof record.at === "number" && now - record.at <= windowMs;
-  return { confirmed, mute: confirmed && record?.mute === true };
-}
-
-/** Leaves guidance for the session's next compaction. */
-export function writeGuidance(dir: string, sessionID: string, text: string): void {
-  writeWhole(guidanceFile(dir, sessionID), { text, at: Date.now() });
-}
-
-/** Takes the session's compaction guidance, if any was left recently (an hour), removing it. */
-export function takeGuidance(dir: string, sessionID: string, now: number): string | undefined {
-  const file = guidanceFile(dir, sessionID);
-  let record: { text?: string; at?: number } | undefined;
-  try {
-    record = JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return undefined;
-  }
-  rmSync(file, { force: true });
-  if (typeof record?.text !== "string" || typeof record.at !== "number" || now - record.at > 3_600_000) return undefined;
-  return record.text;
-}
-
-/** Whether a settings object and a snapshot say the TUI should offer the dialog for this hold. */
-export function shouldOffer(settings: Settings, held: HeldPrompt | undefined, seen: number | undefined): held is HeldPrompt {
-  return !!held && settings.enabled && settings.warn.enabled && held.seq !== seen;
+export function holdable(text: string, mode: string, settings: Settings): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.startsWith("/") || mode !== "normal") return false;
+  return settings.enabled && settings.warn.enabled;
 }

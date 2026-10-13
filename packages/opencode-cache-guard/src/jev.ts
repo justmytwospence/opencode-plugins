@@ -3,9 +3,14 @@
 // Pi's classifier shapes, so `bool` questions go out as the API's `noul` type and its `noul`
 // answers come back as `{ type: "bool", probability }`. Never throws: every failure is
 // `{ ok: false, reason }`.
-import type { Answer, Question } from "./lean.js";
+import type { Answer, Question } from "./lean.ts";
 
 export const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
+
+/** The endpoint: `TYPESAFE_ENDPOINT` when set (a local mock in end-to-end tests), else ENDPOINT. */
+export function endpoint(): string {
+  return process.env.TYPESAFE_ENDPOINT?.trim() || ENDPOINT;
+}
 export const DEFAULT_MODEL = "jev-latest";
 /** The only provider this port reaches Jev through; Pi's port also knows the gateways. */
 export const PROVIDER = "typesafe";
@@ -103,7 +108,7 @@ export async function askJev(state: unknown, questions: Record<string, Question>
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   let response: Response;
   try {
-    response = await (options.fetch ?? fetch)(ENDPOINT, {
+    response = await (options.fetch ?? fetch)(endpoint(), {
       method: "POST",
       headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
       body: JSON.stringify({ model: options.model || DEFAULT_MODEL, state, questions: toApiQuestions(questions) }),

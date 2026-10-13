@@ -18,7 +18,7 @@ const identical = [
   ['opencode-auto-effort', 'opencode-next-prompt', 'opencode-tool-gate'].map(p => `packages/${p}/src/jev.ts`),
   ['opencode-auto-effort', 'opencode-next-prompt', 'opencode-tool-gate'].map(p => `packages/${p}/src/settings.ts`),
   ['opencode-auto-effort', 'opencode-status-footer'].map(p => `packages/${p}/src/limits.ts`),
-  ['opencode-bg', 'opencode-herdr', 'opencode-marimo'].map(p => `packages/${p}/src/herdr-rpc.ts`),
+  ['opencode-bg', 'opencode-cache-guard', 'opencode-herdr', 'opencode-marimo'].map(p => `packages/${p}/src/herdr-rpc.ts`),
 ];
 for (const group of identical) {
   const expected = readFileSync(resolve(root, group[0]), 'utf8');

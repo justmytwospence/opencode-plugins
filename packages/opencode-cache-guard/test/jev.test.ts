@@ -1,8 +1,8 @@
 import { expect, test, vi } from "vitest";
 
-import { DEFAULT_SETTINGS, mergeSettings } from "../src/core.js";
-import { ENDPOINT, askJev, fromApiAnswer, fromApiAnswers, probe, resolveJev, toApiQuestions } from "../src/jev.js";
-import type { Question } from "../src/lean.js";
+import { DEFAULT_SETTINGS, mergeSettings } from "../src/core.ts";
+import { ENDPOINT, askJev, fromApiAnswer, fromApiAnswers, probe, resolveJev, toApiQuestions } from "../src/jev.ts";
+import type { Question } from "../src/lean.ts";
 
 const questions: Record<string, Question> = {
   needs_all: { type: "bool", instructions: "All of it?", criteria: { true: "yes", false: "no" } },

@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, expect, test } from "vitest";
 
-import { DEFAULT_SETTINGS, type Settings, mergeSettings } from "../src/core.js";
-import { askJev } from "../src/jev.js";
-import { type Trimmer, createTrimmer, savePath, toastWanted, trimFloor, untruncated } from "../src/trim.js";
-import { assistant, user } from "./messages.js";
+import { DEFAULT_SETTINGS, type Settings, mergeSettings } from "../src/core.ts";
+import { askJev } from "../src/jev.ts";
+import { type ToolResultLike, type Trimmer, createTrimmer, resultText, savePath, setResultText, toastWanted, trimFloor, untruncated } from "../src/trim.ts";
+import { assistant, user } from "./messages.ts";
 
 const TRIM = DEFAULT_SETTINGS.trim;
 const data = mkdtempSync(path.join(tmpdir(), "cg-data-"));
@@ -46,17 +46,33 @@ function setup(answer: Answerer, settings: Settings | (() => Settings) = DEFAULT
     messages: async () => history,
     ask: (s) => (state, questions) => askJev(state, questions, { model: s.jev.model, timeoutMs: s.jev.timeoutMs, apiKey: key, fetch: fetchImpl }),
     log: (line) => logs.push(line),
-    toast: (message) => toasts.push(message),
+    toast: (_sessionID, message) => toasts.push(message),
     env: { ...env, TYPESAFE_API_KEY: key },
   });
   return { trimmer, sent, logs, toasts };
 }
 
 async function run(trimmer: Trimmer, text = big, call: { tool?: string; callID?: string; args?: unknown } = {}) {
-  const output = { title: "npm test", output: text, metadata: {} };
-  await trimmer.afterTool({ tool: call.tool ?? "bash", sessionID: "ses_1", callID: call.callID ?? "call_1", args: call.args ?? { command: "npm test" } }, output);
-  return output.output;
+  const result: ToolResultLike = { content: [{ type: "text", text }], metadata: {} };
+  await trimmer.afterTool({ tool: call.tool ?? "bash", sessionID: "ses_1", callID: call.callID ?? "call_1", args: call.args ?? { command: "npm test" } }, result);
+  return resultText(result) as string;
 }
+
+test("resultText and setResultText: a string content, one text item, or a string output", () => {
+  const items: ToolResultLike = { content: [{ type: "text", text: "a" }] };
+  expect(resultText(items)).toBe("a");
+  setResultText(items, "b");
+  expect(items.content).toEqual([{ type: "text", text: "b" }]);
+  const str: ToolResultLike = { content: "a" };
+  setResultText(str, "b");
+  expect(resultText(str)).toBe("b");
+  const out: ToolResultLike = { output: "a" };
+  setResultText(out, "b");
+  expect(resultText(out)).toBe("b");
+  // Mixed content (a file and text) is not one text: left alone.
+  expect(resultText({ content: [{ type: "text", text: "a" }, { type: "file", uri: "x" }] })).toBeUndefined();
+  expect(resultText({ output: { rows: 1 } })).toBeUndefined();
+});
 
 test("large output is trimmed to the needed blocks and saved in full", async () => {
   const s = setup(keepErrors);
@@ -128,32 +144,36 @@ test("small output, whole-output tools and the settings' switches pass through w
   expect(live.toasts).toEqual([]);
 });
 
-test("when opencode truncated the output, Jev picks from the full output it saved", async () => {
-  const dir = path.join(data, "opencode", "tool-output");
+test("when OpenCode truncated the output, Jev picks from the full output it saved", async () => {
+  const dir = path.join(data, "opencode", "shell", "abc");
   mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, "tool_1");
+  const file = path.join(dir, "sh_1.out");
   writeFileSync(file, big);
-  // opencode's preview: the last lines only, which do not include the error at line 1000.
+  // OpenCode's preview: the last lines only, which do not include the error at line 1000.
   const tail = big.split("\n").slice(-900).join("\n");
-  const preview = `...1100 lines truncated...\n\nThe tool call succeeded but the output was truncated. Full output saved to: ${file}\nUse Grep to search the full content.\n\n${tail}`;
+  const preview = `${tail}\n\n[showing lines 1101-2000 of 2000; full output saved to ${file}]`;
   const s = setup(keepErrors);
   const text = await run(s.trimmer, preview);
   expect(text).toContain("Error: expected 3 retries, got 1");
   expect(text.length).toBeLessThan(preview.length);
   expect(readFileSync(savePath("ses_1", "call_1", env), "utf8")).toBe(big);
 
-  // A path outside opencode's tool-output directory is never read.
-  expect(untruncated("Full output saved to: /etc/passwd", dir)).toBeUndefined();
-  expect(untruncated(`Full output saved to: ${file}`, dir)).toBe(big);
-  expect(untruncated("no hint", dir)).toBeUndefined();
+  // A path outside OpenCode's data directory is never read; both hint forms are read.
+  const dataDir = path.join(data, "opencode");
+  expect(untruncated("Full output saved to: /etc/passwd", dataDir)).toBeUndefined();
+  expect(untruncated(`[showing lines 1-5 of 9; full output saved to ${file}]`, dataDir)).toBe(big);
+  expect(untruncated(`...truncated...\n\nThe tool call succeeded but the output was truncated. Full output saved to: ${file}\nUse Grep to search.`, dataDir)).toBe(big);
+  expect(untruncated("no hint", dataDir)).toBeUndefined();
   // When the trim of the full output is no smaller than the preview, the preview stays.
   const keepMost = setup((q) => Object.fromEntries(Object.keys(q).map((id) => [id, { type: "noul", noul: id === "needs_all" ? 0 : Number(id.slice(8)) <= 90 ? 0.9 : 0.1 }])));
   expect(await run(keepMost.trimmer, preview, { callID: "call_preview" })).toBe(preview);
-  expect(keepMost.logs[0]).toMatch(/^bash: left opencode's preview, the trim of the full output is no smaller/u);
+  expect(keepMost.logs[0]).toMatch(/^bash: left OpenCode's preview, the trim of the full output is no smaller/u);
 });
 
 test("trimFloor: which tools are trimmed and from what size", () => {
+  expect(trimFloor("shell", TRIM)).toBe(12_000);
   expect(trimFloor("bash", TRIM)).toBe(12_000);
+  expect(trimFloor("execute", TRIM)).toBe(12_000);
   expect(trimFloor("grep", TRIM)).toBe(12_000);
   expect(trimFloor("glob", TRIM)).toBe(12_000);
   expect(trimFloor("list", TRIM)).toBe(12_000);
@@ -164,6 +184,7 @@ test("trimFloor: which tools are trimmed and from what size", () => {
   expect(trimFloor("edit", TRIM)).toBeUndefined();
   expect(trimFloor("write", TRIM)).toBeUndefined();
   expect(trimFloor("apply_patch", TRIM)).toBeUndefined();
+  expect(trimFloor("subagent", TRIM)).toBeUndefined();
   expect(trimFloor("task", TRIM)).toBeUndefined();
   expect(trimFloor("todowrite", TRIM)).toBeUndefined();
   expect(trimFloor("skill", TRIM)).toBeUndefined();

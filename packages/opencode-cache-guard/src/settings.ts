@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { DEFAULT_SETTINGS, NAME, type Settings, mergeSettings } from "./core.js";
+import { DEFAULT_SETTINGS, NAME, type Settings, mergeSettings } from "./core.ts";
 
 /**
  * Shared `~/.config/agents/cache-guard.json`, then `~/.config/opencode/cache-guard.json`, then the
@@ -32,7 +32,7 @@ export function sharedConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "agents");
 }
 
-/** `~/.config/opencode/cache-guard.json`: the opencode-only user file, which the Jev command writes. */
+/** `~/.config/opencode/cache-guard.json`: the OpenCode-only user file, which the Jev command writes. */
 export function userSettingsFile(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "opencode", `${NAME}.json`);
 }
@@ -54,12 +54,7 @@ export function saveUserSettings(patch: Record<string, unknown>, env: NodeJS.Pro
   return file;
 }
 
-/** Where the server plugin leaves each session's cache state for the TUI, and its log. */
-export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(env.XDG_CACHE_HOME || path.join(homedir(), ".cache"), `opencode-${NAME}`);
-}
-
-/** `$XDG_DATA_HOME/opencode` (default `~/.local/share/opencode`): where opencode keeps its data, and this plugin the full tool output it trimmed. */
+/** `$XDG_DATA_HOME/opencode` (default `~/.local/share/opencode`): where OpenCode keeps its data, and this plugin the full tool output it trimmed. */
 export function opencodeDataDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(env.XDG_DATA_HOME || path.join(homedir(), ".local", "share"), "opencode");
 }

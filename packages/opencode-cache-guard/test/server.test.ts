@@ -1,308 +1,200 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, expect, test } from "vitest";
 
-import { SESSION_HEADER, uninstall } from "../src/fetch.js";
-import { VERBATIM_LEAD } from "../src/compact.js";
-import { CacheGuardPlugin, coldReason, createServer, priceOf, promptText } from "../src/server.js";
-import { DEFAULT_SETTINGS } from "../src/core.js";
-import { writeConfirm, writeGuidance } from "../src/holds.js";
-import { view } from "../src/status.js";
-import { assistant as assistantMessage, user } from "./messages.js";
+import { Clock, priceOf, ttlOf } from "../src/clock.ts";
+import { VERBATIM_LEAD } from "../src/compact.ts";
+import { DEFAULT_SETTINGS, mergeSettings } from "../src/core.ts";
+import { modelRef, totalTokens } from "../src/server.ts";
+import { savePath } from "../src/trim.ts";
+import { readUsage, usageOf, usageOfStream } from "../src/usage.ts";
+import { type Answerer, fake, sseResponse } from "./harness.ts";
+import { assistant, user } from "./messages.ts";
 
 const T0 = Date.parse("2026-10-07T12:00:00Z");
-const URL_ = "https://api.anthropic.com/v1/messages?beta=true";
-const sonnet = { id: "claude-sonnet-5-5", providerID: "anthropic", cost: { input: 0, output: 0, cache: { read: 0, write: 0 } } };
-const opus = { id: "claude-opus-5-5", providerID: "anthropic", cost: { input: 0, output: 0, cache: { read: 0, write: 0 } } };
-
-function assistant(sessionID: string, created: number, prompt: number, modelID = "claude-sonnet-5-5") {
-  return { id: "msg", sessionID, role: "assistant", providerID: "anthropic", modelID, time: { created, completed: created + 5_000 }, tokens: { input: 2, output: 1_000, reasoning: 0, cache: { read: prompt - 2, write: 0 } } };
-}
-
-let dir: string;
-let cache: string;
-
-function fakeClient(messages: unknown[] = []) {
-  return {
-    tui: { showToast: vi.fn(async () => ({ data: true })), appendPrompt: vi.fn(async () => ({ data: true })), publish: vi.fn(async () => ({ data: true })) },
-    session: { messages: vi.fn(async () => ({ data: messages })) },
-    app: { log: vi.fn(async () => ({ data: true })) },
-  };
-}
-
-async function plugin(messages: unknown[] = []) {
-  const client = fakeClient(messages);
-  const hooks = await CacheGuardPlugin({ client, directory: dir } as any);
-  return { hooks, client };
-}
-
-/** The plugin with Jev answering through a fake fetch (the API's shapes), and a key in the environment. */
-async function withJev(messages: unknown[], answer: (questions: Record<string, any>, state: any) => unknown, options?: Record<string, unknown>, key = "k") {
-  const client = fakeClient(messages);
-  const sent: any[] = [];
-  const fetchImpl = (async (_url: string, init: RequestInit) => {
-    const body = JSON.parse(String(init.body));
-    sent.push(body);
-    const answers = answer(body.questions, body.state);
-    if (answers instanceof Response) return answers;
-    return new Response(JSON.stringify({ model: "jev-test", answers, usage: { input_tokens: 10 } }));
-  }) as unknown as typeof fetch;
-  const env = { ...process.env, TYPESAFE_API_KEY: key, XDG_DATA_HOME: path.join(cache, "data") };
-  const hooks = await createServer({ client: client as any, directory: dir }, options, { fetch: fetchImpl, env });
-  return { hooks, client, sent };
-}
+const data = mkdtempSync(path.join(tmpdir(), "cg-server-"));
+afterAll(() => rmSync(data, { recursive: true, force: true }));
+const sonnet = { providerID: "anthropic", id: "claude-sonnet-5-5" };
 
 const big = Array.from({ length: 2_000 }, (_, i) => (i === 1_000 ? "Error: expected 3 retries, got 1" : `ok ${i} ${"-".repeat(10)}`)).join("\n");
-const keepErrors = (questions: Record<string, any>, state: any) =>
+const keepErrors: Answerer = (questions, state) =>
   Object.fromEntries(Object.keys(questions).map((id) => [id, { type: "noul", noul: id.startsWith("block::") && String(state?.output?.[id.slice(7)] ?? "").includes("Error") ? 0.9 : 0.05 }]));
-const keepFirstVerbatim = (questions: Record<string, any>) =>
+const keepFirstVerbatim: Answerer = (questions) =>
   Object.fromEntries(Object.keys(questions).map((id) => [id, { type: "choice", choice: id === "keep::U001" ? "verbatim" : "summarize", probabilities: {}, confidence: 1 }]));
+const history = [user("Use pnpm, never npm."), assistant(["Exploring."], [{ tool: "bash", callID: "c1", input: { command: "ls" }, output: "a" }]), user("Now add a cache.")];
 
-const prompt = (text: string) => ({ message: { id: "u" } as any, parts: [{ type: "text", text, id: "p", sessionID: "s", messageID: "u" }] as any });
-
-describe("server", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(T0);
-    dir = mkdtempSync(path.join(tmpdir(), "cg-dir-"));
-    cache = mkdtempSync(path.join(tmpdir(), "cg-cache-"));
-    process.env.XDG_CACHE_HOME = cache;
-    process.env.XDG_CONFIG_HOME = path.join(cache, "no-config");
-  });
-  afterEach(() => {
-    uninstall();
-    vi.useRealTimers();
-    rmSync(dir, { recursive: true, force: true });
-    rmSync(cache, { recursive: true, force: true });
-    delete process.env.XDG_CACHE_HOME;
-    delete process.env.XDG_CONFIG_HOME;
-  });
-
-  test("names the session on the wire, records the request, and leaves a state file", async () => {
-    const calls: RequestInit[] = [];
-    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
-      calls.push(init!);
-      return new Response("{}");
-    }) as unknown as typeof fetch;
-    const { hooks } = await plugin();
-    const headers = { headers: {} as Record<string, string> };
-    await hooks["chat.params"]!({ sessionID: "s", agent: "build", model: sonnet, provider: {}, message: {} } as any, {} as any);
-    await hooks["chat.headers"]!({ sessionID: "s", agent: "build", model: sonnet, provider: {}, message: {} } as any, headers);
-    expect(headers.headers[SESSION_HEADER]).toBe("s");
-    await globalThis.fetch(URL_, { method: "POST", headers: headers.headers, body: JSON.stringify({ model: "claude-sonnet-5-5", messages: [], tools: [{ name: "bash" }] }) });
-    expect(new Headers(calls[0]!.headers).has(SESSION_HEADER)).toBe(false);
-    await hooks.event!({ event: { type: "message.updated", properties: { info: assistant("s", T0, 200_000) } } as any });
-    await vi.advanceTimersByTimeAsync(10);
-    const snapshot = JSON.parse(readFileSync(path.join(cache, "opencode-cache-guard", "s.json"), "utf8"));
-    expect(snapshot).toMatchObject({ sessionID: "s", lastAt: T0, lastRealAt: T0, ttlMs: 300_000, tokens: 201_000, model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" }, warming: true, warms: 0 });
-    expect(snapshot.request).toBeUndefined();
-    expect(view(snapshot, T0 + 48_000, DEFAULT_SETTINGS)).toEqual({ left: "4:12", warms: 0 });
-    expect(view(snapshot, T0 + 300_001, DEFAULT_SETTINGS)).toEqual({ cold: "cold", warms: 0 });
-    await hooks.dispose!();
-  });
-
-  test("holds a cold prompt once, puts the text back, and lets the same prompt through next time", async () => {
-    globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch;
-    const { hooks, client } = await plugin();
-    await hooks["chat.params"]!({ sessionID: "s", agent: "build", model: sonnet, provider: {}, message: {} } as any, {} as any);
-    await globalThis.fetch(URL_, { method: "POST", headers: { [SESSION_HEADER]: "s" }, body: JSON.stringify({ messages: [], tools: [{ name: "bash" }] }) });
-    await hooks.event!({ event: { type: "message.updated", properties: { info: assistant("s", T0, 600_000) } } as any });
-    vi.setSystemTime(T0 + 60_000);
-    await expect(hooks["chat.message"]!({ sessionID: "s", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } }, prompt("go on"))).resolves.toBeUndefined();
-    vi.setSystemTime(T0 + 15 * 60_000);
-    await expect(hooks["chat.message"]!({ sessionID: "s", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } }, prompt("go on"))).rejects.toThrow(/held this prompt/);
-    expect(client.tui.showToast).not.toHaveBeenCalled(); // after the TUI's own error toast
-    await vi.advanceTimersByTimeAsync(500);
-    expect(client.tui.showToast).toHaveBeenCalledTimes(1);
-    const toast = (client.tui.showToast.mock.calls[0] as any)[0].body;
-    expect(toast.title).toBe("Prompt cache miss");
-    expect(toast.message).toContain("The prompt cache expired 10m ago: this prompt re-caches 601k tokens (~$1.38 at API prices).");
-    expect(client.tui.appendPrompt).toHaveBeenCalledWith({ body: { text: "go on" } });
-    expect(client.tui.publish).toHaveBeenCalledWith({ body: { type: "tui.command.execute", properties: { command: "cache-guard.held" } } });
-    // The hold is in the state file for the TUI, with the ways through it priced.
-    const held = JSON.parse(readFileSync(path.join(cache, "opencode-cache-guard", "s.json"), "utf8")).held;
-    expect(held).toMatchObject({ text: "go on", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" }, tokens: 601_000, reason: "expired", seq: T0 + 15 * 60_000 });
-    expect(held.costs.send).toBeCloseTo(1.5025, 3);
-    expect(held.costs.compact).toBeCloseTo(1.202, 3);
-    vi.setSystemTime(T0 + 16 * 60_000);
-    await expect(hooks["chat.message"]!({ sessionID: "s", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } }, prompt("go on "))).resolves.toBeUndefined();
-    // The hold cleared with the send.
-    expect(JSON.parse(readFileSync(path.join(cache, "opencode-cache-guard", "s.json"), "utf8")).held).toBeUndefined();
-    // A different prompt is held again.
-    await expect(hooks["chat.message"]!({ sessionID: "s", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } }, prompt("something else"))).rejects.toThrow();
-    await hooks.dispose!();
-  });
-
-  test("the TUI's choice authorises one send through a confirm file; mute stops the holds", async () => {
-    globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch;
-    const { hooks } = await plugin();
-    await hooks["chat.params"]!({ sessionID: "s", agent: "build", model: sonnet, provider: {}, message: {} } as any, {} as any);
-    await globalThis.fetch(URL_, { method: "POST", headers: { [SESSION_HEADER]: "s" }, body: JSON.stringify({ messages: [], tools: [{ name: "bash" }] }) });
-    await hooks.event!({ event: { type: "message.updated", properties: { info: assistant("s", T0, 600_000) } } as any });
-    vi.setSystemTime(T0 + 15 * 60_000);
-    const state = path.join(cache, "opencode-cache-guard");
-    const message = { sessionID: "s", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } };
-    // A confirm for another text does not count, and is consumed.
-    writeConfirm(state, "s", "other");
-    await expect(hooks["chat.message"]!(message, prompt("go on"))).rejects.toThrow(/held/);
-    expect(existsSync(path.join(state, "s.confirm.json"))).toBe(false);
-    // The dialog's "Send anyway": the text is authorised once.
-    writeConfirm(state, "s", "go on");
-    await expect(hooks["chat.message"]!(message, prompt("go on"))).resolves.toBeUndefined();
-    expect(existsSync(path.join(state, "s.confirm.json"))).toBe(false);
-    await expect(hooks["chat.message"]!(message, prompt("again"))).rejects.toThrow(/held/);
-    // "Send, and stop asking in this session".
-    writeConfirm(state, "s", "again", true);
-    await expect(hooks["chat.message"]!(message, prompt("again"))).resolves.toBeUndefined();
-    await expect(hooks["chat.message"]!(message, prompt("and again"))).resolves.toBeUndefined();
-    expect(JSON.parse(readFileSync(path.join(state, "s.json"), "utf8")).muted).toBe(true);
-    await hooks.dispose!();
-  });
-
-  test("compaction guidance left by the TUI reaches the compacting hook once", async () => {
-    globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch;
-    const { hooks } = await plugin();
-    const state = path.join(cache, "opencode-cache-guard");
-    writeGuidance(state, "s", "Keep the plan.");
-    const output = { context: [] as string[], prompt: undefined as string | undefined };
-    await hooks["experimental.session.compacting"]!({ sessionID: "s" }, output);
-    expect(output.context).toEqual(["Keep the plan."]);
-    const again = { context: [] as string[], prompt: undefined as string | undefined };
-    await hooks["experimental.session.compacting"]!({ sessionID: "s" }, again);
-    expect(again.context).toEqual([]);
-    // Stale guidance (over an hour old) is dropped.
-    writeGuidance(state, "t", "old");
-    vi.setSystemTime(T0 + 2 * 3_600_000);
-    await hooks["experimental.session.compacting"]!({ sessionID: "t" }, again);
-    expect(again.context).toEqual([]);
-    await hooks.dispose!();
-  });
-
-  test("with Jev, large tool output is trimmed in tool.execute.after, logged under cache-guard, and toasted", async () => {
-    globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch;
-    const history = [user("Fix the retry test"), assistantMessage(["Running the tests."])];
-    const { hooks, client, sent } = await withJev(history, keepErrors);
-    const output = { title: "npm test", output: big, metadata: {} };
-    await hooks["tool.execute.after"]!({ tool: "bash", sessionID: "s", callID: "c1", args: { command: "npm test" } }, output);
-    expect(output.output).toContain("Error: expected 3 retries, got 1");
-    expect(output.output.length).toBeLessThan(big.length / 5);
-    expect(output.output).toContain("/opencode/cache-guard/tool-output/s/c1.txt");
-    expect(sent[0].state.intent).toMatchObject({ user_request: "Fix the retry test", agent_said: "Running the tests." });
-    expect(client.app.log).toHaveBeenCalledWith({ body: { service: "cache-guard", level: "info", message: expect.stringMatching(/^bash: kept \d+ of 2000 lines/u) } });
-    expect(client.tui.showToast).toHaveBeenCalledWith({ body: { title: "cache-guard", message: expect.stringMatching(/^bash output trimmed to \d+ of 2000 lines$/u), variant: "info" } });
-    expect(readFileSync(path.join(cache, "opencode-cache-guard", "log.txt"), "utf8")).toMatch(/trim bash: kept/u);
-    // The same call again this turn is left whole; a new prompt starts a new turn (even one that is held).
-    const again = { title: "npm test", output: big, metadata: {} };
-    await hooks["tool.execute.after"]!({ tool: "bash", sessionID: "s", callID: "c2", args: { command: "npm test" } }, again);
-    expect(again.output).toBe(big);
-    await hooks["chat.message"]!({ sessionID: "s" }, prompt("next"));
-    await hooks["tool.execute.after"]!({ tool: "bash", sessionID: "s", callID: "c3", args: { command: "npm test" } }, again);
-    expect(again.output).not.toBe(big);
-    expect(sent).toHaveLength(2);
-    // Without a key nothing is asked.
-    const noKey = await withJev(history, keepErrors, undefined, "");
-    const whole = { title: "npm test", output: big, metadata: {} };
-    await noKey.hooks["tool.execute.after"]!({ tool: "bash", sessionID: "s", callID: "c1", args: {} }, whole);
-    expect(whole.output).toBe(big);
-    expect(noKey.sent).toEqual([]);
-    // Plugin options from opencode.jsonc are a settings layer.
-    const off = await withJev(history, keepErrors, { trim: { enabled: false } });
-    await off.hooks["tool.execute.after"]!({ tool: "bash", sessionID: "s", callID: "c1", args: {} }, whole);
-    expect(whole.output).toBe(big);
-    expect(off.sent).toEqual([]);
-    await hooks.dispose!();
-  });
-
-  test("with Jev, the compacting hook adds the verbatim items after the guidance; failures add nothing", async () => {
-    globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch;
-    const history = [user("Use pnpm, never npm."), assistantMessage(["Exploring."]), user("Now add a cache.")];
-    const { hooks, sent } = await withJev(history, keepFirstVerbatim);
-    const state = path.join(cache, "opencode-cache-guard");
-    writeGuidance(state, "s", "Keep the plan.");
-    const output = { context: [] as string[], prompt: undefined as string | undefined };
-    await hooks["experimental.session.compacting"]!({ sessionID: "s" }, output);
-    expect(output.context).toEqual(["Keep the plan.", `${VERBATIM_LEAD}\n\n## Kept verbatim\n\n**User:** Use pnpm, never npm.`]);
-    expect(sent[0].state.current_goal).toBe("Keep the plan.");
-    expect(sent[0].questions["keep::U001"].type).toBe("choice");
-    // No guidance: the goal is the last two requests.
-    const plain = { context: [] as string[], prompt: undefined as string | undefined };
-    await hooks["experimental.session.compacting"]!({ sessionID: "s" }, plain);
-    expect(sent[1].state.current_goal).toBe("Use pnpm, never npm.\n---\nNow add a cache.");
-    expect(plain.context).toHaveLength(1);
-    // Jev down, filter off, or no key: only the guidance.
-    const down = await withJev(history, () => new Response("x", { status: 503 }));
-    const none = { context: [] as string[], prompt: undefined as string | undefined };
-    await down.hooks["experimental.session.compacting"]!({ sessionID: "s" }, none);
-    expect(none.context).toEqual([]);
-    const unfiltered = await withJev(history, keepFirstVerbatim, { compact: { filter: false } });
-    await unfiltered.hooks["experimental.session.compacting"]!({ sessionID: "s" }, none);
-    expect(none.context).toEqual([]);
-    expect(unfiltered.sent).toEqual([]);
-    const noKey = await withJev(history, keepFirstVerbatim, undefined, "");
-    await noKey.hooks["experimental.session.compacting"]!({ sessionID: "s" }, none);
-    expect(none.context).toEqual([]);
-    await hooks.dispose!();
-  });
-
-  test("small contexts and synthetic-only prompts pass; a model switch is held", async () => {
-    globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch;
-    const { hooks } = await plugin();
-    await hooks["chat.params"]!({ sessionID: "s", agent: "build", model: sonnet, provider: {}, message: {} } as any, {} as any);
-    await globalThis.fetch(URL_, { method: "POST", headers: { [SESSION_HEADER]: "s" }, body: JSON.stringify({ messages: [], tools: [{ name: "bash" }] }) });
-    await hooks.event!({ event: { type: "message.updated", properties: { info: assistant("s", T0, 20_000) } } as any });
-    vi.setSystemTime(T0 + 15 * 60_000);
-    await expect(hooks["chat.message"]!({ sessionID: "s", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } }, prompt("hi"))).resolves.toBeUndefined();
-    await hooks.event!({ event: { type: "message.updated", properties: { info: assistant("s", T0 + 15 * 60_000, 600_000) } } as any });
-    vi.setSystemTime(T0 + 15 * 60_000 + 1_000);
-    await expect(hooks["chat.message"]!({ sessionID: "s", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } }, { message: {} as any, parts: [{ type: "text", text: "attached", synthetic: true }] as any })).resolves.toBeUndefined();
-    await expect(hooks["chat.message"]!({ sessionID: "s", model: { providerID: "anthropic", modelID: "claude-opus-5-5" } }, prompt("switch"))).rejects.toThrow(/held/);
-    await hooks.dispose!();
-  });
-
-  test("a resumed session's clock comes from its last reply", async () => {
-    globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch;
-    const { hooks, client } = await plugin([{ info: { role: "user" }, parts: [] }, { info: assistant("r", T0 - 3_600_000, 700_000), parts: [] }]);
-    await expect(hooks["chat.message"]!({ sessionID: "r", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } }, prompt("back"))).rejects.toThrow(/held/);
-    expect(client.session.messages).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(500);
-    const toast = (client.tui.showToast.mock.calls[0] as any)[0].body;
-    expect(toast.message).toContain("expired 54m");
-    await hooks.dispose!();
-  });
-
-  test("warnings follow the settings files", async () => {
-    globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch;
-    mkdirSync(path.join(dir, ".opencode"));
-    writeFileSync(path.join(dir, ".opencode", "cache-guard.json"), JSON.stringify({ warn: { enabled: false } }));
-    const { hooks, client } = await plugin([{ info: assistant("r", T0 - 3_600_000, 700_000), parts: [] }]);
-    await expect(hooks["chat.message"]!({ sessionID: "r", model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } }, prompt("back"))).resolves.toBeUndefined();
-    await vi.advanceTimersByTimeAsync(500);
-    expect(client.tui.showToast).not.toHaveBeenCalled();
-    await hooks.dispose!();
-  });
+test("the clock: model and prices from the context hook, the start from the request, the size from the step", async () => {
+  const f = fake({ cost: async () => ({ input: 3, cache: { read: 0.3, write: 3.75 } }) });
+  await f.hooks.context({ sessionID: "s", agent: "build", model: sonnet });
+  expect(f.hooks.state("s")).toMatchObject({ model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" }, ttlMs: 300_000, price: { input: 3, cacheRead: 0.3, cacheWrite: 3.75 }, lastAt: 0, tokens: 0 });
+  f.hooks.httpRequest({ sessionID: "s", kind: "primary", model: sonnet });
+  expect(f.hooks.state("s")!.lastAt).toBe(T0);
+  f.hooks.stepStarted("s", T0 - 100);
+  expect(f.hooks.state("s")!.lastAt).toBe(T0); // the wire time, when later, wins
+  f.hooks.stepEnded("s", { input: 2, output: 1_000, reasoning: 0, cache: { read: 599_000, write: 0 } });
+  expect(f.hooks.state("s")!.tokens).toBe(600_002);
+  // Auxiliary requests (titles, compaction) do not restart the clock.
+  f.now = T0 + 10_000;
+  f.hooks.httpRequest({ sessionID: "s", kind: "title", model: sonnet });
+  expect(f.hooks.state("s")!.lastAt).toBe(T0);
+  // Every change reached the terminals; an unknown session is null.
+  expect(f.states.length).toBeGreaterThanOrEqual(3);
+  expect(f.states.at(-1)).toMatchObject({ sessionID: "s", tokens: 600_002 });
+  expect(f.hooks.state("nope")).toBeNull();
+  // A compaction empties the clock; a deleted session is forgotten.
+  f.hooks.compacted("s");
+  expect(f.hooks.state("s")).toMatchObject({ lastAt: 0, tokens: 0 });
+  f.hooks.forget("s");
+  expect(f.hooks.state("s")).toBeNull();
 });
 
-describe("helpers", () => {
-  test("prices: catalog when priced, list prices for an OAuth-zeroed Claude model, none otherwise", () => {
-    expect(priceOf({ providerID: "anthropic", modelID: "claude-opus-5-5" }, { input: 15, cache: { read: 1.5, write: 18.75 } })).toEqual({ input: 15, cacheRead: 1.5, cacheWrite: 18.75 });
-    expect(priceOf({ providerID: "anthropic", modelID: "claude-opus-5-5" }, opus.cost)).toEqual({ input: 4, cacheRead: 0.2 });
-    expect(priceOf({ providerID: "openai", modelID: "gpt-6-astra" }, { input: 0 })).toBeUndefined();
-  });
+test("the Anthropic response's usage is read from a clone: cache reads and writes, logged", async () => {
+  const f = fake();
+  const response = sseResponse({ input: 2, read: 599_000, write: 1_000 });
+  f.hooks.httpResponse({ sessionID: "s", kind: "primary", model: sonnet, response });
+  await f.hooks.settle();
+  expect(f.hooks.state("s")!.lastCache).toEqual({ read: 599_000, write: 1_000, prompt: 600_002 });
+  expect(f.hooks.state("s")!.tokens).toBe(600_002);
+  expect(f.logs).toContain("s cache: read 599000, wrote 1000 of 600002 prompt tokens");
+  // The original stream is untouched.
+  expect(await response.text()).toContain("message_stop");
+  // Other providers and auxiliary requests are not read.
+  f.hooks.httpResponse({ sessionID: "o", kind: "primary", model: { providerID: "openai" }, response: sseResponse({ input: 1, read: 1, write: 1 }) });
+  f.hooks.httpResponse({ sessionID: "s", kind: "compaction", model: sonnet, response: sseResponse({ input: 1, read: 1, write: 1 }) });
+  await f.hooks.settle();
+  expect(f.hooks.state("o")).toBeNull();
+  expect(f.hooks.state("s")!.lastCache!.read).toBe(599_000);
+});
 
-  test("cold reasons", () => {
-    const s = DEFAULT_SETTINGS;
-    const anthropic = { lastAt: T0, ttlMs: 300_000, model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" } };
-    expect(coldReason(anthropic, anthropic.model, T0 + 100_000, s)).toBeUndefined();
-    expect(coldReason(anthropic, anthropic.model, T0 + 400_000, s)).toEqual({ kind: "expired", idleMs: 100_000 });
-    expect(coldReason(anthropic, { providerID: "anthropic", modelID: "claude-opus-5-5" }, T0 + 1, s)).toEqual({ kind: "model", from: "claude-sonnet-5-5", to: "claude-opus-5-5" });
-    const openai = { lastAt: T0, ttlMs: undefined, model: { providerID: "openai", modelID: "gpt-6-astra" } };
-    expect(coldReason(openai, openai.model, T0 + 2 * 3_600_000, s)).toBeUndefined();
-    expect(coldReason(openai, openai.model, T0 + 4 * 3_600_000, s)).toEqual({ kind: "idle", idleMs: 4 * 3_600_000 });
-    expect(coldReason({ lastAt: 0, ttlMs: 300_000, model: undefined }, undefined, T0, s)).toBeUndefined();
-  });
+test("usage parsing: JSON bodies, SSE streams, errors and other bodies", async () => {
+  expect(usageOf({ usage: { input_tokens: 5, cache_read_input_tokens: 10, cache_creation_input_tokens: 2 } })).toEqual({ read: 10, write: 2, prompt: 17 });
+  expect(usageOf({ usage: { input_tokens: 5 } })).toEqual({ read: 0, write: 0, prompt: 5 });
+  expect(usageOf({})).toBeUndefined();
+  expect(usageOfStream('event: ping\ndata: {"type":"ping"}\n\nevent: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1,"cache_read_input_tokens":9}}}\n\n')).toEqual({ read: 9, write: 0, prompt: 10 });
+  expect(usageOfStream("data: {broken")).toBeUndefined();
+  expect(await readUsage(new Response(JSON.stringify({ usage: { input_tokens: 3 } }), { headers: { "content-type": "application/json" } }))).toEqual({ read: 0, write: 0, prompt: 3 });
+  expect(await readUsage(new Response("nope", { status: 500 }))).toBeUndefined();
+  expect(await readUsage(new Response("not json", { headers: { "content-type": "application/json" } }))).toBeUndefined();
+});
 
-  test("prompt text skips what opencode attached", () => {
-    expect(promptText([{ type: "text", text: "  real  " }, { type: "text", text: "ctx", synthetic: true }, { type: "file" }])).toBe("real");
-  });
+test("with Jev, large tool output is trimmed in the tool hook, logged, and noted to the terminals", async () => {
+  const f = fake({ messages: history, answer: keepErrors, env: { XDG_DATA_HOME: data } });
+  const result = { content: [{ type: "text", text: big }], metadata: {} };
+  await f.hooks.toolAfter({ tool: "bash", sessionID: "s", id: "call_1", input: { command: "npm test" }, status: "completed", result });
+  const text = (result.content[0] as { text: string }).text;
+  expect(text).toContain("Error: expected 3 retries, got 1");
+  expect(text.length).toBeLessThan(big.length / 5);
+  expect(readFileSync(savePath("s", "call_1", { XDG_DATA_HOME: data }), "utf8")).toBe(big);
+  expect(f.sent[0].state.intent).toMatchObject({ user_request: "Now add a cache.", tool: "bash" });
+  expect(f.logs[0]).toMatch(/^trim bash: kept \d+ of 2000 lines/u);
+  expect(f.trimmed).toEqual([{ sessionID: "s", message: expect.stringMatching(/^bash output trimmed to \d+ of 2000 lines$/u) }]);
+  // The same call again this turn is left whole; the next prompt starts a new turn.
+  const again = { content: [{ type: "text", text: big }] };
+  await f.hooks.toolAfter({ tool: "bash", sessionID: "s", id: "call_2", input: { command: "npm test" }, status: "completed", result: again });
+  expect((again.content[0] as { text: string }).text).toBe(big);
+  f.hooks.prompt("s");
+  await f.hooks.toolAfter({ tool: "bash", sessionID: "s", id: "call_3", input: { command: "npm test" }, status: "completed", result: again });
+  expect((again.content[0] as { text: string }).text).not.toBe(big);
+  // Errors, small output and tools kept whole pass without Jev.
+  const before = f.sent.length;
+  const error = { content: [{ type: "text", text: big }] };
+  await f.hooks.toolAfter({ tool: "bash", sessionID: "s", id: "call_4", input: {}, status: "error", result: error });
+  await f.hooks.toolAfter({ tool: "edit", sessionID: "s", id: "call_5", input: {}, status: "completed", result: { content: [{ type: "text", text: big }] } });
+  expect(f.sent).toHaveLength(before);
+});
+
+test("without a key, or with Jev off, tool output is left whole", async () => {
+  const noKey = fake({ messages: history, answer: keepErrors, key: "", env: { XDG_DATA_HOME: data } });
+  const result = { content: [{ type: "text", text: big }] };
+  await noKey.hooks.toolAfter({ tool: "bash", sessionID: "s", id: "c", input: {}, status: "completed", result });
+  expect((result.content[0] as { text: string }).text).toBe(big);
+  expect(noKey.sent).toEqual([]);
+  const off = fake({ messages: history, answer: keepErrors, settings: mergeSettings(DEFAULT_SETTINGS, ['{"jev":{"enabled":false}}']), env: { XDG_DATA_HOME: data } });
+  await off.hooks.toolAfter({ tool: "bash", sessionID: "s", id: "c", input: {}, status: "completed", result });
+  expect(off.sent).toEqual([]);
+});
+
+test("an ordinary compaction: guidance armed by the terminal, then Jev's verbatim items; failures add nothing", async () => {
+  const f = fake({ messages: history, answer: keepFirstVerbatim });
+  f.hooks.arm({ sessionID: "s", kind: "guidance", text: "Keep the plan." });
+  const event = { sessionID: "s", system: [] as Array<{ type: "text"; text: string }>, result: undefined as { summary: string } | undefined };
+  await f.hooks.compaction(event);
+  expect(event.result).toBeUndefined();
+  expect(event.system.map((p) => p.text)).toEqual(["Keep the plan.", expect.stringContaining(VERBATIM_LEAD)]);
+  expect(event.system[1]!.text).toContain("**User:** Use pnpm, never npm.");
+  expect(f.sent[0].state.current_goal).toBe("Keep the plan.");
+  expect(f.logs.at(-1)).toMatch(/^s compaction: Jev judged 4 items in \d+ ms \(1 verbatim, 3 noted, 0 dropped\)$/u);
+  // The arm is consumed: the next compaction has no guidance and judges against the last requests.
+  const next = { sessionID: "s", system: [] as Array<{ type: "text"; text: string }> };
+  await f.hooks.compaction(next);
+  expect(next.system).toHaveLength(1);
+  expect(f.sent[1].state.current_goal).toBe("Use pnpm, never npm.\n---\nNow add a cache.");
+  // Jev down: nothing is added, the compaction proceeds.
+  const down = fake({ messages: history, answer: () => new Response("x", { status: 503 }) });
+  const plain = { sessionID: "s", system: [] as Array<{ type: "text"; text: string }> };
+  await down.hooks.compaction(plain);
+  expect(plain.system).toEqual([]);
+  expect(down.logs).toEqual(["s compaction: Jev added nothing (Jev failed (HTTP 503))"]);
+  // compact.filter off, or no key: nothing is asked.
+  const filterOff = fake({ messages: history, answer: keepFirstVerbatim, settings: mergeSettings(DEFAULT_SETTINGS, ['{"compact":{"filter":false}}']) });
+  await filterOff.hooks.compaction({ sessionID: "s", system: [] });
+  expect(filterOff.sent).toEqual([]);
+});
+
+test("a compaction armed for Jev replaces the model's summary with one written in code; a Jev failure fails it", async () => {
+  const f = fake({ messages: history, answer: keepFirstVerbatim });
+  f.hooks.arm({ sessionID: "s", kind: "jev", text: "fix the parser" });
+  const event = { sessionID: "s", system: [] as Array<{ type: "text"; text: string }>, result: undefined as { summary: string } | undefined };
+  await f.hooks.compaction(event);
+  expect(event.result!.summary).toContain("# Compacted with Jev");
+  expect(event.result!.summary).toContain("**User:** Use pnpm, never npm.");
+  expect(f.sent[0].state.current_goal).toBe("fix the parser");
+  expect(f.compacted).toEqual([{ sessionID: "s", ok: true, message: expect.stringMatching(/^Jev kept 1 of 4 items word for word in \d+\.\d s\.$/u) }]);
+  // Jev fails: the hook throws, so nothing is compacted, and the terminal hears why.
+  const down = fake({ messages: history, answer: () => new Response("x", { status: 503 }) });
+  down.hooks.arm({ sessionID: "s", kind: "jev", text: "go on" });
+  await expect(down.hooks.compaction({ sessionID: "s", system: [] })).rejects.toThrow(/compaction with Jev did not run \(Jev failed \(HTTP 503\)\)/u);
+  expect(down.compacted).toEqual([{ sessionID: "s", ok: false, message: "Compaction with Jev did not run: Jev failed (HTTP 503)." }]);
+  // No key: the same.
+  const noKey = fake({ messages: history, key: "" });
+  noKey.hooks.arm({ sessionID: "s", kind: "jev", text: "go on" });
+  await expect(noKey.hooks.compaction({ sessionID: "s", system: [] })).rejects.toThrow(/TYPESAFE_API_KEY is not set/u);
+  // A stale arm (older than ten minutes) is ignored.
+  const stale = fake({ messages: history, answer: keepFirstVerbatim });
+  stale.hooks.arm({ sessionID: "s", kind: "jev", text: "go on" });
+  stale.now = T0 + 11 * 60_000;
+  const later = { sessionID: "s", system: [] as Array<{ type: "text"; text: string }>, result: undefined as { summary: string } | undefined };
+  await stale.hooks.compaction(later);
+  expect(later.result).toBeUndefined();
+});
+
+test("the Jev RPC: ready with the probe's latency, missing with the reason, off", async () => {
+  const ready = fake({ answer: (q) => Object.fromEntries(Object.keys(q).map((id) => [id, { type: "noul", noul: 0.9 }])) });
+  expect(await ready.hooks.jev()).toMatchObject({ kind: "ready", label: "typesafe/jev-latest", latencyMs: expect.any(Number) });
+  const down = fake({ answer: () => new Response("x", { status: 401 }) });
+  expect(await down.hooks.jev()).toEqual({ kind: "ready", label: "typesafe/jev-latest", reason: "invalid API key" });
+  expect(await fake({ key: "" }).hooks.jev()).toEqual({ kind: "missing", reason: "TYPESAFE_API_KEY is not set" });
+  expect(await fake({ settings: mergeSettings(DEFAULT_SETTINGS, ['{"jev":{"enabled":false}}']) }).hooks.jev()).toEqual({ kind: "off" });
+});
+
+test("helpers: prices, TTLs, model refs, token totals, the clock's changes", () => {
+  expect(priceOf({ providerID: "anthropic", modelID: "claude-sonnet-5-5" }, { input: 3, cache: { read: 0.3, write: 3.75 } })).toEqual({ input: 3, cacheRead: 0.3, cacheWrite: 3.75 });
+  expect(priceOf({ providerID: "anthropic", modelID: "claude-sonnet-5-5" }, { input: 0, cache: { read: 0, write: 0 } })).toEqual({ input: 2, cacheRead: 0.2 });
+  expect(priceOf({ providerID: "anthropic", modelID: "claude-sonnet-5-5" })).toEqual({ input: 2, cacheRead: 0.2 });
+  expect(priceOf({ providerID: "openai", modelID: "gpt-5" }, { input: 0 })).toBeUndefined();
+  expect(ttlOf({ providerID: "anthropic", modelID: "x" }, {})).toBe(300_000);
+  expect(ttlOf({ providerID: "anthropic", modelID: "x" }, { OPENCODE_CACHE_GUARD_TTL_MS: "2000" })).toBe(2_000);
+  expect(ttlOf({ providerID: "openai", modelID: "x" }, {})).toBeUndefined();
+  expect(modelRef({ providerID: "anthropic", id: "a" })).toEqual({ providerID: "anthropic", modelID: "a" });
+  expect(modelRef({ providerID: "anthropic", modelID: "b" })).toEqual({ providerID: "anthropic", modelID: "b" });
+  expect(totalTokens({ input: 1, output: 2, reasoning: 3, cache: { read: 4, write: 5 } })).toBe(12);
+  const changes: number[] = [];
+  const clock = new Clock({ now: () => T0, onChange: (s) => changes.push(s.tokens) });
+  clock.recordTokens("s", 10);
+  clock.recordTokens("s", 10);
+  clock.requestStarted("s", T0 - 1);
+  clock.requestStarted("s", T0 - 2);
+  expect(changes).toEqual([10, 10]);
+  expect(clock.get("s").lastAt).toBe(T0 - 1);
 });

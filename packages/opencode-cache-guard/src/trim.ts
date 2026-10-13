@@ -1,24 +1,25 @@
-// Trimming large tool output with Jev as it arrives (`tool.execute.after`), before it enters the
-// context, so the prompt cache is never disturbed: Jev picks the blocks the agent needs for its
-// current step; the rest becomes `[… N lines omitted …]` markers and the full output is saved to
-// a file the agent can read. The algorithm is `lean.ts`; this file is what is opencode's: the
-// tools, opencode's own truncation file, the session's messages, the log and the toast.
+// Trimming large tool output with Jev as it arrives (the tool hook `execute.after`), before it
+// enters the context, so the prompt cache is never disturbed: Jev picks the blocks the agent needs
+// for its current step; the rest becomes `[… N lines omitted …]` markers and the full output is
+// saved to a file the agent can read. The algorithm is `lean.ts`; this file is what is OpenCode's:
+// the tools, the result shape, OpenCode's own truncation file, the session's messages, the log
+// and the toast (an RPC event the terminal half shows).
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import { NAME, type Settings } from "./core.js";
-import { type Ask, resolveJev } from "./jev.js";
-import { type TrimLimits, blocksFor, trimQuestions, trimState, trimVerdict } from "./lean.js";
-import { opencodeDataDir } from "./settings.js";
-import { type MessageLike, recentTexts } from "./units.js";
+import { NAME, type Settings } from "./core.ts";
+import { type Ask, resolveJev } from "./jev.ts";
+import { type TrimLimits, blocksFor, trimQuestions, trimState, trimVerdict } from "./lean.ts";
+import { opencodeDataDir } from "./settings.ts";
+import { type MessageLike, recentTexts } from "./units.ts";
 
-/** opencode's built-in tools whose output must stay whole: edits, plans, subagent answers, skills. */
-const WHOLE = new Set(["edit", "write", "apply_patch", "patch", "multiedit", "task", "todowrite", "todoread", "skill", "question", "lsp", "invalid", "batch"]);
+/** OpenCode's built-in tools whose output must stay whole: edits, plans, subagent answers, skills, questions. */
+const WHOLE = new Set(["edit", "write", "apply_patch", "patch", "multiedit", "subagent", "task", "todowrite", "todoread", "skill", "question", "lsp", "invalid", "batch"]);
 
 /**
- * Which tools' output may be trimmed, and from what size: `read` from `readMinChars`; `bash`,
- * `grep`, `glob`, `list`, `webfetch`, `websearch`, MCP tools (`<server>_<tool>`) and other
- * plugin tools from `minChars`.
+ * Which tools' output may be trimmed, and from what size: `read` from `readMinChars`; `shell`
+ * (`bash` in OpenCode 1), `execute` (Code Mode), `grep`, `glob`, `webfetch`, `websearch`,
+ * MCP tools and other plugin tools from `minChars`.
  */
 export function trimFloor(tool: string, limits: TrimLimits): number | undefined {
   if (tool === "read") return limits.readMinChars;
@@ -32,24 +33,22 @@ export function savePath(sessionID: string, callID: string, env: NodeJS.ProcessE
   return path.join(opencodeDataDir(env), NAME, "tool-output", safe(sessionID), `${safe(callID)}.txt`);
 }
 
-/** opencode's own truncation directory: `~/.local/share/opencode/tool-output`. */
-export function opencodeOutputDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(opencodeDataDir(env), "tool-output");
-}
-
-/** Largest full output read back from opencode's truncation file. */
+/** Largest full output read back from OpenCode's truncation file. */
 export const MAX_FULL_BYTES = 8 * 1024 * 1024;
 
 /**
- * The whole output when opencode truncated it (it keeps only a head or tail preview and saves the
- * rest under its tool-output directory, naming the file in a hint), so Jev can pick from all of it
- * rather than from the preview. Undefined when there is no such file or it cannot be read.
+ * The whole output when OpenCode truncated it (it keeps a preview and saves the rest under its
+ * data directory, naming the file in a hint: OpenCode 2 `[showing lines 1001-3000 of 3000; full
+ * output saved to <file>]`, OpenCode 1 `Full output saved to: <file>`), so Jev can pick from all
+ * of it rather than from the preview. Only files under `dataDir` (OpenCode's data directory) are
+ * read. Undefined when there is no such file or it cannot be read.
  */
-export function untruncated(text: string, dir = opencodeOutputDir()): string | undefined {
-  const match = /Full output saved to: (\S+)/u.exec(text);
+export function untruncated(text: string, dataDir = opencodeDataDir()): string | undefined {
+  const match = /full output saved to:? (\S+?)\]?\s*$/imu.exec(text);
   if (!match) return undefined;
   const file = path.resolve(match[1]!);
-  if (path.dirname(file) !== path.resolve(dir)) return undefined;
+  const root = path.resolve(dataDir);
+  if (!file.startsWith(root + path.sep)) return undefined;
   try {
     if (statSync(file).size > MAX_FULL_BYTES) return undefined;
     return readFileSync(file, "utf8");
@@ -70,9 +69,33 @@ export interface TrimInput {
   args: unknown;
 }
 
+/** A tool result as the `execute.after` hook carries it: text in `content` (a string, or items) or in `output`. */
+export interface ToolResultLike {
+  output?: unknown;
+  content?: string | ReadonlyArray<{ type: string; text?: string; [key: string]: unknown }>;
+  metadata?: unknown;
+}
+
+/** The result's text, when it is one text: a string `content`, a single text item, or a string `output`. */
+export function resultText(result: ToolResultLike): string | undefined {
+  if (typeof result.content === "string") return result.content;
+  if (Array.isArray(result.content)) {
+    const texts = result.content.filter((c) => c.type === "text");
+    return texts.length === 1 && texts.length === result.content.length && typeof texts[0]!.text === "string" ? texts[0]!.text : undefined;
+  }
+  return typeof result.output === "string" ? result.output : undefined;
+}
+
+/** Replaces the text `resultText` found. */
+export function setResultText(result: ToolResultLike, text: string): void {
+  if (typeof result.content === "string") result.content = text;
+  else if (Array.isArray(result.content)) result.content = [{ ...result.content[0], type: "text", text }];
+  else result.output = text;
+}
+
 export interface Trimmer {
-  /** The `tool.execute.after` hook: replaces `output.output` when Jev trims it. */
-  afterTool(input: TrimInput, output: { output: string }): Promise<void>;
+  /** The tool hook `execute.after`: replaces the result's text when Jev trims it. */
+  afterTool(input: TrimInput, result: ToolResultLike): Promise<void>;
   /** A new prompt in the session: the same call may be trimmed again. */
   newTurn(sessionID: string): void;
   forget(sessionID: string): void;
@@ -88,7 +111,7 @@ export interface TrimDeps {
   /** Jev, with the timeout and key of this call (`jev.timeoutMs`). */
   ask: (settings: Settings) => Ask;
   log: (line: string) => void;
-  toast: (message: string) => void;
+  toast: (sessionID: string, message: string) => void;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -100,16 +123,16 @@ export function createTrimmer(deps: TrimDeps): Trimmer {
     newTurn: (sessionID) => trimmed.delete(sessionID),
     forget: (sessionID) => trimmed.delete(sessionID),
     savedChars: () => saved,
-    afterTool: async (input, output) => {
+    afterTool: async (input, result) => {
       const settings = deps.settings();
       if (!settings.enabled || !settings.trim.enabled) return;
       const floor = trimFloor(input.tool, settings.trim);
       if (floor === undefined) return;
-      const original = output.output;
+      const original = resultText(result);
       if (typeof original !== "string" || original.length <= floor) return;
       const jev = resolveJev(settings, deps.env);
       if (jev.kind !== "ready") return;
-      const text = untruncated(original, opencodeOutputDir(deps.env)) ?? original;
+      const text = untruncated(original, opencodeDataDir(deps.env)) ?? original;
       const key = `${input.tool}:${JSON.stringify(input.args) ?? ""}`;
       if (trimmed.get(input.sessionID)?.has(key)) return;
 
@@ -125,7 +148,7 @@ export function createTrimmer(deps: TrimDeps): Trimmer {
       const verdict = trimVerdict(lines, blocks, outcome.answers, settings.trim, fullPath);
       const detail = `needs_all ${verdict.needsAll.toFixed(2)}, ${blocks.length} blocks, ${outcome.latencyMs} ms${outcome.inputTokens ? `, ${outcome.inputTokens} tokens` : ""}`;
       if (verdict.trim && verdict.text.length >= original.length) {
-        deps.log(`${input.tool}: left opencode's preview, the trim of the full output is no smaller (${detail})`);
+        deps.log(`${input.tool}: left OpenCode's preview, the trim of the full output is no smaller (${detail})`);
         return;
       }
       if (!verdict.trim) {
@@ -142,11 +165,11 @@ export function createTrimmer(deps: TrimDeps): Trimmer {
       const keys = trimmed.get(input.sessionID) ?? new Set<string>();
       keys.add(key);
       trimmed.set(input.sessionID, keys);
-      output.output = verdict.text;
+      setResultText(result, verdict.text);
       saved += original.length - verdict.text.length;
       const tokens = Math.round((original.length - verdict.text.length) / 4_000);
       deps.log(`${input.tool}: kept ${verdict.keptLines} of ${verdict.totalLines} lines, about ${tokens}k tokens saved (${detail}); full output ${fullPath}`);
-      if (toastWanted(settings)) deps.toast(`${input.tool} output trimmed to ${verdict.keptLines} of ${verdict.totalLines} lines`);
+      if (toastWanted(settings)) deps.toast(input.sessionID, `${input.tool} output trimmed to ${verdict.keptLines} of ${verdict.totalLines} lines`);
     },
   };
 }

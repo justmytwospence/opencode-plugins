@@ -1,299 +1,342 @@
-// opencode-cache-guard (server): keeps the Anthropic prompt cache warm between turns by sending
-// the session's last request again with a one-token output cap, asks before a prompt that would
-// re-cache a large conversation (it holds the prompt; the TUI half offers the choices: keep,
-// continue on Jev's summary, compact first, start fresh, send), and leaves each session's cache
-// clock in a state file for the TUI half. With Jev (TYPESAFE_API_KEY) it also trims large tool
-// output before it enters the context (trim.ts) and tells opencode's summarizer what must survive
-// a compaction word for word (compact.ts).
+// opencode-cache-guard (server): keeps each session's prompt-cache clock (when the last model
+// request started, how many tokens the next one re-sends, the model, its TTL and prices) and
+// serves it to the terminals over RPC; the terminal half holds a cold-cache prompt before it is
+// submitted and shows the clock. With Jev (TYPESAFE_API_KEY) the server also trims large tool
+// output before it enters the context (trim.ts) and compacts: on the terminal's request, Jev's
+// summary written in code replaces the model's (the `compaction` hook's `result`), and for every
+// other compaction Jev tells OpenCode's summarizer what must survive word for word (compact.ts).
 //
-// opencode sends Anthropic cache markers without a TTL, so the cache lives 5 minutes from each
-// request's start. src/core.ts and src/lean.ts are shared with the pi, Claude Code and Codex ports
-// unchanged.
-import { appendFileSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
+// Keeping the cache warm is OpenCode's own job (`"warming": true` in opencode.jsonc), as it is
+// Pi's for pi-cache-guard. src/core.ts and src/lean.ts are shared with the pi, Claude Code and
+// Codex ports unchanged.
+import type { Plugin } from "@opencode/plugin";
 
-import type { Hooks, Plugin } from "@opencode-ai/plugin";
+import { type CostLike, Clock, type ModelRef, type Snapshot, priceOf, ttlOf } from "./clock.ts";
+import { jevSummary, verbatimContext } from "./compact.ts";
+import { NAME, type Settings } from "./core.ts";
+import { type JevState, askJev, label, probe, resolveJev } from "./jev.ts";
+import { type ArmInput, CacheGuardRpc, type Compacted, type JevOutput, type Note } from "./rpc.ts";
+import { loadSettings } from "./settings.ts";
+import { type ToolResultLike, createTrimmer } from "./trim.ts";
+import type { MessageLike } from "./units.ts";
+import { readUsage } from "./usage.ts";
 
-import { verbatimContext } from "./compact.js";
-import {
-  type ColdReason,
-  ConfirmMemo,
-  NAME,
-  type Price,
-  type Settings,
-  claudePrice,
-  describeMiss,
-  missCost,
-  worthWarning,
-} from "./core.js";
-import { SESSION_HEADER, install, uninstall } from "./fetch.js";
-import { HOLD_COMMAND, confirmFile, guidanceFile, heldPrompt, takeConfirm, takeGuidance } from "./holds.js";
-import { askJev, resolveJev } from "./jev.js";
-import { loadSettings, stateDir } from "./settings.js";
-import { createTrimmer } from "./trim.js";
-import type { MessageLike } from "./units.js";
-import { ANTHROPIC_TTL_MS, type ModelRef, type SessionSnapshot, type SessionState, Warmer, sameModel } from "./warmer.js";
+/** How long a terminal's `arm` stays in force waiting for its compaction. */
+const ARM_TTL_MS = 10 * 60_000;
 
-/** Agents opencode runs for itself; their requests carry no tools and are not the session's cache. */
-const HIDDEN_AGENTS = new Set(["title", "summary", "compaction"]);
-/** How long after the hold the explanation toast goes up, past the TUI's own error toast. */
-const TOAST_DELAY_MS = 400;
+/** What the hooks need from OpenCode, so tests can fake it. */
+export interface Host {
+  /** The settings in force now (read on each use, so edits apply without a restart). */
+  settings(): Settings;
+  /** The session's context messages; empty when they cannot be read. */
+  messages(sessionID: string): Promise<MessageLike[]>;
+  /** A model's catalog prices, undefined when unknown. */
+  cost(model: ModelRef): Promise<CostLike | undefined>;
+  emit: {
+    state(snapshot: Snapshot): void;
+    trimmed(note: Note): void;
+    compacted(event: Compacted): void;
+  };
+  log(line: string): void;
+  env?: NodeJS.ProcessEnv;
+  /** Jev's HTTP requests go through this (the live API otherwise). */
+  fetch?: typeof fetch;
+}
 
-interface CostLike {
+/** The parts of the hook events the server reads and writes. */
+export interface ContextEvent {
+  readonly sessionID: string;
+  readonly agent: string;
+  readonly model: { readonly providerID: string; readonly id?: string; readonly modelID?: string };
+}
+
+export interface HttpEvent {
+  readonly sessionID: string;
+  readonly kind: string;
+  readonly model: { readonly providerID: string };
+}
+
+export interface ToolEvent {
+  readonly tool: string;
+  readonly sessionID: string;
+  readonly id: string;
+  readonly input: unknown;
+  readonly status: "completed" | "error";
+  result?: ToolResultLike;
+}
+
+export interface CompactionEvent {
+  readonly sessionID: string;
+  system: Array<{ type: "text"; text: string; [key: string]: unknown }>;
+  result?: { summary: string; [key: string]: unknown };
+}
+
+export interface TokensLike {
   input?: number;
+  output?: number;
+  reasoning?: number;
   cache?: { read?: number; write?: number };
 }
 
-/**
- * The model's prices per million tokens from opencode's catalog; list prices when the auth plugin
- * zeroed them (it does for an OAuth subscription, whose usage still scales the same way).
- */
-export function priceOf(model: ModelRef, cost?: CostLike): Price | undefined {
-  if (cost && (cost.input ?? 0) > 0) {
-    return { input: cost.input!, cacheRead: cost.cache?.read ?? 0, cacheWrite: (cost.cache?.write ?? 0) > 0 ? cost.cache!.write : undefined };
-  }
-  return model.providerID === "anthropic" ? claudePrice(model.modelID) : undefined;
+export interface Hooks {
+  /** A new prompt in the session: a tool call trimmed last turn may be trimmed again. */
+  prompt(sessionID: string): void;
+  context(event: ContextEvent): Promise<void>;
+  httpRequest(event: HttpEvent): void;
+  httpResponse(event: HttpEvent & { response: Pick<Response, "clone"> }): void;
+  stepStarted(sessionID: string, started: number, model?: ModelRef): void;
+  stepEnded(sessionID: string, tokens: TokensLike, model?: ModelRef): void;
+  toolAfter(event: ToolEvent): Promise<void>;
+  compaction(event: CompactionEvent): Promise<void>;
+  compacted(sessionID: string): void;
+  forget(sessionID: string): void;
+  /** RPC: the session's snapshot, null when the server has none. */
+  state(sessionID: string): Snapshot | null;
+  /** RPC: what the session's next compaction should do. */
+  arm(input: ArmInput): void;
+  /** RPC: whether the server reaches Jev, and how fast. */
+  jev(): Promise<JevOutput>;
+  /** Pending usage reads (tests await them). */
+  settle(): Promise<void>;
 }
 
-export function ttlOf(model: ModelRef, env: NodeJS.ProcessEnv = process.env): number | undefined {
-  if (model.providerID !== "anthropic") return undefined;
-  // For testing: a short TTL makes a session go cold in seconds.
-  const override = Number(env.OPENCODE_CACHE_GUARD_TTL_MS);
-  return Number.isFinite(override) && override > 0 ? override : ANTHROPIC_TTL_MS;
+export function modelRef(model: { providerID: string; id?: string; modelID?: string }): ModelRef {
+  return { providerID: model.providerID, modelID: model.modelID ?? model.id ?? "" };
 }
 
-/** Why the session's next request misses, if it does. */
-export function coldReason(state: Pick<SessionState, "lastAt" | "ttlMs" | "model">, model: ModelRef | undefined, now: number, settings: Settings): ColdReason | undefined {
-  if (!state.lastAt) return undefined;
-  if (model && state.model && !sameModel(model, state.model)) return { kind: "model", from: state.model.modelID, to: model.modelID };
-  const idleMs = Math.max(0, now - state.lastAt);
-  if (state.ttlMs !== undefined) return idleMs > state.ttlMs ? { kind: "expired", idleMs: idleMs - state.ttlMs } : undefined;
-  return idleMs >= settings.warn.idleMinutes * 60_000 ? { kind: "idle", idleMs } : undefined;
+export function totalTokens(t: TokensLike): number {
+  return (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) + (t.output ?? 0);
 }
 
-/** The prompt's own text: what the user typed, not what opencode attached. */
-export function promptText(parts: ReadonlyArray<{ type: string; text?: string; synthetic?: boolean }>): string {
-  return parts
-    .filter((part) => part.type === "text" && !part.synthetic && typeof part.text === "string")
-    .map((part) => part.text!)
-    .join("\n")
-    .trim();
+interface Armed {
+  kind: "jev" | "guidance";
+  text?: string;
+  at: number;
 }
 
-/** What the server half needs beyond opencode's input; a seam for tests. */
-export interface ServerOptions {
-  /** Jev's HTTP requests go through this (the live API otherwise). */
-  fetch?: typeof fetch;
-  env?: NodeJS.ProcessEnv;
-}
-
-export const CacheGuardPlugin: Plugin = async ({ client, directory }, options) => createServer({ client, directory }, options);
-
-export async function createServer({ client, directory }: { client: Parameters<Plugin>[0]["client"]; directory: string }, options?: Record<string, unknown>, extra: ServerOptions = {}): Promise<Hooks> {
-  const env = extra.env ?? process.env;
-  const settingsNow = () => loadSettings(directory, env, options);
-  let settings = settingsNow();
-  const dir = stateDir(env);
-  mkdirSync(dir, { recursive: true });
-  const log = (line: string) => {
-    try {
-      appendFileSync(path.join(dir, "log.txt"), `${new Date().toISOString()} ${line}\n`);
-    } catch {
-      // Logging is best effort.
+/** The hooks, OpenCode-free. */
+export function createHooks(host: Host, now: () => number = Date.now): Hooks {
+  const env = host.env ?? process.env;
+  const clock = new Clock({ now, onChange: (s) => host.emit.state(s) });
+  const armed = new Map<string, Armed>();
+  const pending = new Set<Promise<unknown>>();
+  const prices = new Map<string, Promise<ReturnType<typeof priceOf>>>();
+  const price = (model: ModelRef) => {
+    const key = `${model.providerID}/${model.modelID}`;
+    let p = prices.get(key);
+    if (!p) {
+      p = host
+        .cost(model)
+        .then((cost) => priceOf(model, cost))
+        .catch(() => priceOf(model));
+      prices.set(key, p);
     }
+    return p;
   };
-  /** The session's messages, as opencode stores them; empty when they cannot be read. */
-  const messagesOf = async (sessionID: string): Promise<MessageLike[]> => {
-    try {
-      const result = await client.session.messages({ path: { id: sessionID } });
-      return (result.data ?? []) as unknown as MessageLike[];
-    } catch {
-      return [];
-    }
-  };
-  // Jev: trims large tool output as it arrives. Its decisions go to opencode's log (service
-  // cache-guard, `opencode run --print-logs`) and to log.txt.
+  const ask = (settings: Settings, jev: Extract<JevState, { kind: "ready" }>, timeoutMs: number) => (state: Record<string, unknown>, questions: Parameters<typeof askJev>[1]) =>
+    askJev(state, questions, { model: jev.target.model, timeoutMs, apiKey: env.TYPESAFE_API_KEY, ...(host.fetch ? { fetch: host.fetch } : {}) });
   const trimmer = createTrimmer({
-    settings: settingsNow,
-    messages: messagesOf,
-    ask: (s) => (state, questions) => askJev(state, questions, { model: s.jev.model, timeoutMs: s.jev.timeoutMs, apiKey: env.TYPESAFE_API_KEY, ...(extra.fetch ? { fetch: extra.fetch } : {}) }),
-    log: (line) => {
-      log(`trim ${line}`);
-      void client.app.log({ body: { service: NAME, level: "info", message: line } }).catch(() => undefined);
+    settings: host.settings,
+    messages: host.messages,
+    ask: (s) => {
+      const jev = resolveJev(s, env);
+      return jev.kind === "ready" ? ask(s, jev, s.jev.timeoutMs) : async () => ({ ok: false as const, reason: "Jev is not set up" });
     },
-    toast: (message) => void client.tui.showToast({ body: { title: NAME, message, variant: "info" } }).catch(() => undefined),
+    log: (line) => host.log(`trim ${line}`),
+    toast: (sessionID, message) => host.emit.trimmed({ sessionID, message }),
     env,
   });
-  // Tiny files, written whole so the TUI never reads half of one.
-  const write = (snapshot: SessionSnapshot) => {
-    const file = path.join(dir, `${snapshot.sessionID}.json`);
-    const temporary = `${file}.${process.pid}.tmp`;
-    try {
-      writeFileSync(temporary, JSON.stringify(snapshot));
-      renameSync(temporary, file);
-    } catch {
-      // The TUI shows nothing for this session until the next write.
-    }
-  };
-  const delayMs = Number(process.env.OPENCODE_CACHE_GUARD_WARM_DELAY_MS);
-  const memo = new ConfirmMemo();
-  const prices = new Map<string, Price | undefined>();
-  const restored = new Set<string>();
-  let lastParamsSession: string | undefined;
 
-  const original = install((record) => {
-    const sessionID = record.sessionID ?? lastParamsSession;
-    if (!sessionID) return;
-    log(`${sessionID} request recorded (${record.body.length} bytes, session from ${record.sessionVia ?? "the last chat.params"})`);
-    warmer.recordRequest(sessionID, record);
-  });
-  const warmer = new Warmer({
-    settings: () => settings,
-    fetch: (url, init) => original(url, init),
-    log,
-    onChange: write,
-    delayMs: Number.isFinite(delayMs) && delayMs > 0 ? delayMs : undefined,
-  });
-
-  /** A session this process has not seen a request for (resumed): its clock from its last reply. */
-  const restore = async (sessionID: string): Promise<SessionState | undefined> => {
-    if (restored.has(sessionID)) return warmer.sessions.get(sessionID);
-    restored.add(sessionID);
-    try {
-      const result = await client.session.messages({ path: { id: sessionID } });
-      const messages = (result.data ?? []) as Array<{ info: Record<string, any> }>;
-      for (let index = messages.length - 1; index >= 0; index--) {
-        const info = messages[index]!.info;
-        if (info.role !== "assistant" || !info.tokens) continue;
-        const tokens = (info.tokens.input ?? 0) + (info.tokens.cache?.read ?? 0) + (info.tokens.cache?.write ?? 0) + (info.tokens.output ?? 0);
-        if (tokens <= 0) continue;
-        const model: ModelRef = { providerID: info.providerID, modelID: info.modelID };
-        return warmer.restore(sessionID, {
-          at: info.time?.completed ?? info.time?.created ?? 0,
-          tokens,
-          model,
-          ttlMs: ttlOf(model),
-          price: prices.get(`${model.providerID}/${model.modelID}`) ?? priceOf(model),
-        });
-      }
-    } catch {
-      // No history to read: nothing to warn about.
-    }
-    return undefined;
-  };
-
-  const hooks: Hooks = {
-    dispose: async () => {
-      uninstall();
-      warmer.dispose();
+  return {
+    prompt(sessionID) {
+      trimmer.newTurn(sessionID);
     },
-    "chat.params": async (input) => {
-      if (HIDDEN_AGENTS.has(input.agent)) return;
-      const model: ModelRef = { providerID: input.model.providerID, modelID: input.model.id };
-      const price = priceOf(model, input.model.cost);
-      prices.set(`${model.providerID}/${model.modelID}`, price);
-      restored.add(input.sessionID);
-      warmer.setModel(input.sessionID, model, price, ttlOf(model));
-      lastParamsSession = input.sessionID;
+    async context(event) {
+      const model = modelRef(event.model);
+      clock.setModel(event.sessionID, model, await price(model), ttlOf(model, env));
     },
-    "chat.headers": async (input, output) => {
-      if (HIDDEN_AGENTS.has(input.agent) || input.model.providerID !== "anthropic") return;
-      output.headers[SESSION_HEADER] = input.sessionID;
+    httpRequest(event) {
+      if (event.kind !== "primary") return;
+      clock.requestStarted(event.sessionID, now());
     },
-    event: async ({ event }) => {
-      const type = event.type as string;
-      const properties = (event as { properties: Record<string, any> }).properties;
-      if (type === "message.updated") {
-        const info = properties.info;
-        if (info?.role !== "assistant" || !info.tokens) return;
-        const tokens = (info.tokens.input ?? 0) + (info.tokens.cache?.read ?? 0) + (info.tokens.cache?.write ?? 0) + (info.tokens.output ?? 0);
-        warmer.recordTokens(info.sessionID, tokens, { providerID: info.providerID, modelID: info.modelID }, info.time?.created);
-      } else if (type === "session.status") {
-        warmer.setBusy(properties.sessionID, properties.status?.type !== "idle");
-      } else if (type === "session.idle") {
-        warmer.setBusy(properties.sessionID, false);
-      } else if (type === "session.created" || type === "session.updated") {
-        if (properties.info?.parentID) warmer.setChild(properties.info.id, true);
-      } else if (type === "session.compacted") {
-        warmer.reset(properties.sessionID);
-      } else if (type === "session.deleted") {
-        const id = properties.info?.id;
-        warmer.sessions.delete(id);
-        trimmer.forget(id);
-        if (id) for (const file of [path.join(dir, `${id}.json`), confirmFile(dir, id), guidanceFile(dir, id)]) rmSync(file, { force: true });
-      }
-    },
-    "tool.execute.after": async (input, output) => trimmer.afterTool(input, output),
-    // Guidance the TUI left for a compaction it asked for ("Focus on this prompt", or written), and
-    // with Jev the items that must survive word for word, judged against that guidance (else the
-    // last two requests). Any Jev failure adds nothing.
-    "experimental.session.compacting": async (input, output) => {
-      const guidance = takeGuidance(dir, input.sessionID, Date.now());
-      if (guidance) output.context.push(guidance);
-      settings = settingsNow();
-      if (!settings.compact.filter) return;
-      const jev = resolveJev(settings, env);
-      if (jev.kind !== "ready") return;
-      const ask = (state: Record<string, unknown>, questions: Parameters<typeof askJev>[1]) =>
-        askJev(state, questions, { model: jev.target.model, timeoutMs: settings.compact.timeoutMs, apiKey: env.TYPESAFE_API_KEY, ...(extra.fetch ? { fetch: extra.fetch } : {}) });
-      const verbatim = await verbatimContext(await messagesOf(input.sessionID), guidance, settings.compact, ask);
-      if (!verbatim.ok) {
-        log(`${input.sessionID} compaction: Jev added nothing (${verbatim.reason})`);
+    httpResponse(event) {
+      if (event.kind !== "primary" || event.model.providerID !== "anthropic") return;
+      let clone: Response;
+      try {
+        clone = event.response.clone();
+      } catch {
         return;
       }
-      log(`${input.sessionID} compaction: Jev judged ${verbatim.units} items in ${verbatim.latencyMs} ms (${verbatim.counts.verbatim} verbatim, ${verbatim.counts.summarize} noted, ${verbatim.counts.drop} dropped)`);
-      if (verbatim.context) output.context.push(verbatim.context);
+      const read = readUsage(clone).then((usage) => {
+        if (!usage) return;
+        clock.recordCache(event.sessionID, usage);
+        host.log(`${event.sessionID} cache: read ${usage.read}, wrote ${usage.write} of ${usage.prompt} prompt tokens`);
+      });
+      pending.add(read);
+      void read.finally(() => pending.delete(read));
     },
-    "chat.message": async (input, output) => {
-      // A new prompt: a call trimmed in the last turn may be trimmed again.
-      trimmer.newTurn(input.sessionID);
-      settings = settingsNow();
-      if (!settings.enabled || !settings.warn.enabled) return;
-      const text = promptText(output.parts as Array<{ type: string; text?: string; synthetic?: boolean }>);
-      if (!text) return;
-      const state = warmer.sessions.get(input.sessionID)?.lastAt ? warmer.sessions.get(input.sessionID) : await restore(input.sessionID);
-      if (!state?.lastAt) return;
-      const now = Date.now();
-      const windowMs = settings.warn.confirmSeconds * 1000;
-      // A choice the TUI made for this text, or an earlier hold of it: this send is authorised.
-      const confirm = takeConfirm(dir, input.sessionID, text, now, windowMs);
-      if (confirm.mute) warmer.setMuted(input.sessionID, true);
-      const authorised = confirm.confirmed || memo.confirmed(input.sessionID, text, now, windowMs);
-      if (state.held) warmer.setHeld(input.sessionID, undefined);
-      if (authorised || state.muted) return;
-      const reason = coldReason(state, input.model, now, settings);
-      if (!reason) return;
-      const next = reason.kind === "model" && input.model ? input.model : state.model;
-      const price = next ? (prices.get(`${next.providerID}/${next.modelID}`) ?? priceOf(next)) : undefined;
-      const ttlMs = state.ttlMs ?? ANTHROPIC_TTL_MS;
-      const cost = price ? missCost(state.tokens, price, ttlMs) : undefined;
-      if (!worthWarning(state.tokens, cost, settings)) return;
-      memo.arm(input.sessionID, text, now);
-      const minutes = Math.round(settings.warn.confirmSeconds / 60);
-      const message = describeMiss(reason, state.tokens, cost);
-      log(`${input.sessionID} held a prompt: ${message}`);
-      const message_ = output.message as { agent?: string; model?: { providerID: string; modelID: string; variant?: string } };
-      const model = input.model ?? (message_.model ? { providerID: message_.model.providerID, modelID: message_.model.modelID } : undefined);
-      warmer.setHeld(input.sessionID, heldPrompt({
-        text, agent: input.agent ?? message_.agent, model, variant: input.variant ?? message_.model?.variant,
-        now, line: message, reason, tokens: state.tokens, price, ttlMs,
-      }));
-      // The TUI cleared its input when it sent the prompt; put the text back for the second Enter.
-      await client.tui.appendPrompt({ body: { text } }).catch(() => undefined);
-      // The TUI half, when loaded, opens the choice dialog on this command; without it, the toast
-      // below says what to do.
-      await client.tui.publish({ body: { type: "tui.command.execute", properties: { command: HOLD_COMMAND } } }).catch(() => undefined);
-      // The TUI shows one toast at a time and answers the failed send with a generic error toast
-      // of its own; this one lands just after it and takes its place.
-      setTimeout(() => {
-        void client.tui
-          .showToast({ body: { title: "Prompt cache miss", message: `${message} Press Enter again within ${minutes} min to send it anyway; /compact or /new first is cheaper.`, variant: "warning", duration: 12_000 } })
-          .catch(() => undefined);
-      }, TOAST_DELAY_MS).unref?.();
-      throw new Error(`${NAME} held this prompt. Press Enter again within ${minutes} min to send it anyway.`);
+    // The event stream is global (every location's sessions), while the hooks above fire only
+    // for this instance's sessions; another location's instance must not emit bare snapshots for
+    // a session it never served, so step events count only for sessions a hook has seen.
+    stepStarted(sessionID, started, model) {
+      if (!clock.sessions.has(sessionID)) return;
+      clock.requestStarted(sessionID, started);
+      if (model) clock.recordTokens(sessionID, 0, model);
+    },
+    stepEnded(sessionID, tokens, model) {
+      if (!clock.sessions.has(sessionID)) return;
+      clock.recordTokens(sessionID, totalTokens(tokens), model);
+    },
+    async toolAfter(event) {
+      if (event.status !== "completed" || !event.result) return;
+      await trimmer.afterTool({ tool: event.tool, sessionID: event.sessionID, callID: event.id, args: event.input }, event.result);
+    },
+    // What the terminal armed for this compaction (Jev's summary, or guidance for the model's),
+    // and with Jev the items that must survive word for word, judged against that guidance (else
+    // the last two requests). Any Jev failure adds nothing; an armed Jev compaction fails instead.
+    async compaction(event) {
+      const settings = host.settings();
+      const arm = armed.get(event.sessionID);
+      armed.delete(event.sessionID);
+      const live = arm && now() - arm.at <= ARM_TTL_MS ? arm : undefined;
+      const jev = resolveJev(settings, env);
+      const messages = async () => host.messages(event.sessionID);
+      if (live?.kind === "jev") {
+        const fail = (reason: string) => {
+          host.log(`${event.sessionID} compaction: Jev's summary did not run (${reason})`);
+          host.emit.compacted({ sessionID: event.sessionID, ok: false, message: `Compaction with Jev did not run: ${reason}.` });
+          throw new Error(`${NAME}: compaction with Jev did not run (${reason})`);
+        };
+        if (jev.kind !== "ready") return fail(jev.kind === "off" ? "Jev is off" : jev.reason);
+        const summary = await jevSummary(await messages(), live.text ?? "", settings.compact, ask(settings, jev, settings.compact.timeoutMs));
+        if (!summary.ok) return fail(summary.reason);
+        event.result = { summary: summary.summary };
+        host.log(`${event.sessionID} compaction: Jev kept ${summary.counts.verbatim} of ${summary.units} items word for word in ${summary.latencyMs} ms`);
+        host.emit.compacted({ sessionID: event.sessionID, ok: true, message: `Jev kept ${summary.counts.verbatim} of ${summary.units} items word for word in ${(summary.latencyMs / 1000).toFixed(1)} s.` });
+        return;
+      }
+      const guidance = live?.kind === "guidance" ? live.text?.trim() || undefined : undefined;
+      if (guidance) event.system.push({ type: "text", text: guidance });
+      if (!settings.compact.filter || jev.kind !== "ready") return;
+      const verbatim = await verbatimContext(await messages(), guidance, settings.compact, ask(settings, jev, settings.compact.timeoutMs));
+      if (!verbatim.ok) {
+        host.log(`${event.sessionID} compaction: Jev added nothing (${verbatim.reason})`);
+        return;
+      }
+      host.log(`${event.sessionID} compaction: Jev judged ${verbatim.units} items in ${verbatim.latencyMs} ms (${verbatim.counts.verbatim} verbatim, ${verbatim.counts.summarize} noted, ${verbatim.counts.drop} dropped)`);
+      if (verbatim.context) event.system.push({ type: "text", text: verbatim.context });
+    },
+    compacted(sessionID) {
+      clock.reset(sessionID);
+    },
+    forget(sessionID) {
+      clock.forget(sessionID);
+      armed.delete(sessionID);
+      trimmer.forget(sessionID);
+    },
+    state(sessionID) {
+      const s = clock.sessions.get(sessionID);
+      return s ? { ...s } : null;
+    },
+    arm(input) {
+      armed.set(input.sessionID, { kind: input.kind, text: input.text, at: now() });
+    },
+    async jev() {
+      const settings = host.settings();
+      const state = resolveJev(settings, env);
+      if (state.kind !== "ready") return state.kind === "off" ? { kind: "off" } : { kind: "missing", reason: state.reason };
+      const answer = await probe({ model: state.target.model, apiKey: env.TYPESAFE_API_KEY, ...(host.fetch ? { fetch: host.fetch } : {}) });
+      return answer.ok ? { kind: "ready", label: label(state.target), latencyMs: answer.latencyMs } : { kind: "ready", label: label(state.target), reason: answer.reason };
+    },
+    async settle() {
+      await Promise.all([...pending]);
     },
   };
-  return hooks;
 }
 
-export default { id: `opencode-${NAME}`, server: CacheGuardPlugin };
+interface ModelLike {
+  providerID: string;
+  id: string;
+  cost?: readonly CostLike[];
+}
+
+/** The catalog's prices of every model, cached until the model list changes. */
+function costSource(ctx: Plugin.Context) {
+  let cache: Promise<Map<string, CostLike | undefined>> | undefined;
+  const load = async () => {
+    const list = (await ctx.model.list()) as unknown as { data?: readonly ModelLike[] } | readonly ModelLike[];
+    const models = Array.isArray(list) ? list : ((list as { data?: readonly ModelLike[] }).data ?? []);
+    return new Map(models.map((m) => [`${m.providerID}/${m.id}`, m.cost?.find((c: CostLike & { tier?: unknown }) => !c.tier) ?? m.cost?.[0]]));
+  };
+  return {
+    async cost(model: ModelRef) {
+      cache ??= load().catch(() => new Map());
+      return (await cache).get(`${model.providerID}/${model.modelID}`);
+    },
+    invalidate() {
+      cache = undefined;
+    },
+  };
+}
+
+export default {
+  id: NAME,
+  async setup(ctx) {
+    const rpc = await ctx.rpc.register(CacheGuardRpc, {
+      state: async (input) => hooks.state((input as { sessionID: string }).sessionID) as never,
+      arm: async (input) => {
+        hooks.arm(input as ArmInput);
+        return {};
+      },
+      jev: async () => hooks.jev(),
+    });
+    const source = costSource(ctx);
+    const emit = <Name extends "state" | "trimmed" | "compacted">(name: Name, data: unknown) =>
+      void (rpc.events.emit as (name: Name, data: unknown) => Promise<void>)(name, data).catch(() => undefined);
+    const hooks = createHooks({
+      settings: () => loadSettings(ctx.location.directory, process.env, ctx.options as Record<string, unknown>),
+      messages: async (sessionID) => {
+        try {
+          return (await ctx.session.context({ sessionID: sessionID as never })) as unknown as MessageLike[];
+        } catch {
+          return [];
+        }
+      },
+      cost: source.cost,
+      emit: {
+        state: (s) => emit("state", s),
+        trimmed: (n) => emit("trimmed", n),
+        compacted: (c) => emit("compacted", c),
+      },
+      log: (line) => console.error(`[${NAME}] ${line}`),
+    });
+
+    await ctx.session.hook("prompt", (event) => hooks.prompt(event.sessionID));
+    await ctx.session.hook("context", (event) => hooks.context(event as unknown as ContextEvent));
+    await ctx.session.hook("http.request", (event) => hooks.httpRequest(event));
+    await ctx.session.hook("http.response", (event) => hooks.httpResponse(event), { providerID: "anthropic" });
+    await ctx.tool.hook("execute.after", (event) => hooks.toolAfter(event as unknown as ToolEvent));
+    await ctx.session.hook("compaction", (event) => hooks.compaction(event as unknown as CompactionEvent));
+
+    const stop = new AbortController();
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: stop.signal })) {
+          const { type, data } = event as { type?: string; data?: Record<string, any> };
+          if (!data?.sessionID) {
+            if (type === "model.updated" || type === "provider.updated") source.invalidate();
+            continue;
+          }
+          const sessionID = String(data.sessionID);
+          if (type === "session.step.started") hooks.stepStarted(sessionID, Number(data.started) || Date.now(), data.model ? modelRef(data.model) : undefined);
+          else if (type === "session.step.ended" && data.tokens) hooks.stepEnded(sessionID, data.tokens as TokensLike);
+          else if (type === "session.compaction.ended") hooks.compacted(sessionID);
+          else if (type === "session.deleted") hooks.forget(sessionID);
+        }
+      } catch {
+        // The stream ends with the plugin.
+      }
+    })();
+    return () => stop.abort();
+  },
+} satisfies Plugin.Plugin;

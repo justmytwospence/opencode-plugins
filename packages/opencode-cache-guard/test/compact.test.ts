@@ -1,10 +1,10 @@
 import { expect, test } from "vitest";
 
-import { VERBATIM_LEAD, jevSummary, judgeUnits, verbatimContext } from "../src/compact.js";
-import { DEFAULT_SETTINGS } from "../src/core.js";
-import type { Ask, JevOutcome } from "../src/jev.js";
-import type { Answer, Unit } from "../src/lean.js";
-import { assistant, user } from "./messages.js";
+import { VERBATIM_LEAD, jevSummary, judgeUnits, templateHeadings, verbatimContext } from "../src/compact.ts";
+import { DEFAULT_SETTINGS } from "../src/core.ts";
+import type { Ask, JevOutcome } from "../src/jev.ts";
+import type { Answer, Unit } from "../src/lean.ts";
+import { assistant, user } from "./messages.ts";
 
 const COMPACT = DEFAULT_SETTINGS.compact;
 
@@ -63,12 +63,20 @@ test("jevSummary writes the summary in code, judged against the held prompt", as
   expect(jev.calls[0]!.state.current_goal).toBe("fix the parser");
   expect(jev.calls[0]!.state.units.U003).toEqual({ kind: "tool", call: 'bash({"command":"ls"})', result: "a\nb" });
   expect(result.summary).toMatch(/^# Compacted with Jev/u);
-  expect(result.summary).toContain("## Kept verbatim\n\n**User:** Use pnpm, never npm.");
+  // The sections carry OpenCode's template headings, which it requires of a summary.
+  expect(result.summary).toContain("## Important Context\n\n**User:** Use pnpm, never npm.");
+  expect(result.summary).toContain("## Objective\n\nWhat the user asked for, in order:\n- Use pnpm, never npm.\n- Now add a cache.");
+  expect(result.summary).toContain("## Relevant Files\n\nModified: src/cache.ts");
+  expect(result.summary).toContain("## Work State\n");
+  expect(result.summary).not.toContain("## Kept verbatim");
   expect(result.summary).not.toContain("Exploring.");
-  expect(result.summary).toContain("- Use pnpm, never npm.\n- Now add a cache.");
-  expect(result.summary).toContain("Modified: src/cache.ts");
+  expect(templateHeadings("## Goal\nx\n## Earlier summary\ny")).toBe("## Objective\nx\n## Earlier summary\ny");
   expect(result.counts).toEqual({ verbatim: 1, drop: 1, summarize: 3 });
   expect(result.units).toBe(5);
+  // Without a goal (cache-guard: compact with no focus), the last two requests are the goal.
+  const plain = asking(() => "summarize");
+  await jevSummary(history, "  ", COMPACT, plain.ask);
+  expect(plain.calls[0]!.state.current_goal).toBe("Use pnpm, never npm.\n---\nNow add a cache.");
   expect(await jevSummary([], "g", COMPACT, jev.ask)).toEqual({ ok: false, reason: "nothing for Jev to judge" });
   const down = asking(() => "summarize", () => "timed out");
   expect(await jevSummary(history, "g", COMPACT, down.ask)).toEqual({ ok: false, reason: "Jev failed (timed out)" });

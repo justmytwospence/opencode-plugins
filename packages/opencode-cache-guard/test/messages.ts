@@ -1,25 +1,26 @@
-// opencode messages (`{ info, parts }`) for the tests.
-import type { MessageLike } from "../src/units.js";
+// OpenCode 2 session messages for the tests.
+import type { MessageLike } from "../src/units.ts";
 
-export const user = (text: string, synthetic = false): MessageLike => ({ info: { role: "user" }, parts: [{ type: "text", text, synthetic }] });
+export const user = (text: string, synthetic = false): MessageLike => (synthetic ? { type: "synthetic", text } : { type: "user", text });
 
 export const assistant = (
   texts: string[],
   tools: Array<{ tool: string; callID: string; input: Record<string, unknown>; output?: string; error?: string }> = [],
-  summary?: boolean,
+  extra: Record<string, unknown> = {},
 ): MessageLike => ({
-  info: { role: "assistant", ...(summary ? { summary: true } : {}) },
-  parts: [
-    { type: "step-start" },
+  type: "assistant",
+  ...extra,
+  content: [
     ...texts.map((text) => ({ type: "text", text })),
     ...tools.map((t) => ({
       type: "tool",
-      tool: t.tool,
-      callID: t.callID,
+      id: t.callID,
+      name: t.tool,
       state: t.error !== undefined
-        ? { status: "error", input: t.input, error: t.error, time: { start: 1, end: 2 } }
-        : { status: "completed", input: t.input, output: t.output ?? "", title: t.tool, metadata: {}, time: { start: 1, end: 2 } },
+        ? { status: "error", input: t.input, error: { name: "ToolError", message: t.error } }
+        : { status: "completed", input: t.input, content: [{ type: "text", text: t.output ?? "" }] },
     })),
-    { type: "step-finish" },
   ],
 });
+
+export const compaction = (summary: string, status = "completed"): MessageLike => ({ type: "compaction", status, summary, recent: "" });

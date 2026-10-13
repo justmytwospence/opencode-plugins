@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 
-import { DEFAULT_SETTINGS } from "../src/core.js";
-import { loadSettings, opencodeDataDir, saveUserSettings, stateDir, userSettingsFile } from "../src/settings.js";
+import { DEFAULT_SETTINGS } from "../src/core.ts";
+import { loadSettings, opencodeDataDir, saveUserSettings, userSettingsFile } from "../src/settings.ts";
 
 let config: string;
 let project: string;
@@ -65,6 +65,5 @@ test("saveUserSettings merges into ~/.config/opencode/cache-guard.json and refus
 });
 
 test("directories follow XDG", () => {
-  expect(stateDir({ XDG_CACHE_HOME: "/c" })).toBe("/c/opencode-cache-guard");
   expect(opencodeDataDir({ XDG_DATA_HOME: "/d" })).toBe("/d/opencode");
 });

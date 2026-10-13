@@ -1,14 +1,17 @@
 {
   "name": "opencode-cache-guard",
   "version": "0.1.0",
-  "description": "opencode keeps the Anthropic prompt cache warm between turns, asks before a prompt that would re-cache a large conversation, shows the cache's time left beside the prompt, and with Jev keeps the context lean: trims large tool output and continues a cold cache on a one-second summary.",
+  "description": "Asks before a prompt that would re-cache a large Anthropic conversation, shows the prompt cache's time left beside the prompt, and with Jev keeps the context lean: trims large tool output and compacts a cold cache on a one-second summary.",
   "type": "module",
   "license": "MIT",
   "exports": {
-    "./server": "./src/server.ts",
-    "./tui": "./src/tui.ts"
+    ".": "./index.ts",
+    "./tui": "./tui.ts",
+    "./rpc": "./src/rpc.ts"
   },
   "files": [
+    "index.ts",
+    "tui.ts",
     "src"
   ],
   "keywords": [
@@ -32,11 +35,13 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.0",
-    "@opentui/core": ">=0.4.5",
-    "@opentui/solid": ">=0.4.5",
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
     "@types/node": "^22.20.4",
-    "solid-js": "^1.9.0",
+    "solid-js": "1.9.12",
     "typescript": "^5.9.0",
     "vitest": "^5.0.2"
   }

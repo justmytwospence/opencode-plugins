@@ -1,10 +1,18 @@
 import { expect, test } from "vitest";
 
-import { extractUnits, lastUserMessages, messageText, recentTexts } from "../src/units.js";
-import { assistant, user } from "./messages.js";
+import { extractUnits, lastUserMessages, messageText, recentTexts, toolResultText } from "../src/units.ts";
+import { assistant, compaction, user } from "./messages.ts";
 
-test("messageText: text parts that are neither synthetic nor ignored", () => {
-  expect(messageText({ info: { role: "user" }, parts: [{ type: "text", text: "a" }, { type: "text", text: "ctx", synthetic: true }, { type: "text", text: "old", ignored: true }, { type: "file" }, { type: "text", text: "b" }] })).toBe("a\nb");
+test("messageText: user text, assistant text parts (not reasoning), nothing for other messages", () => {
+  expect(messageText({ type: "user", text: "a" })).toBe("a");
+  expect(messageText({ type: "assistant", content: [{ type: "reasoning", text: "hmm" }, { type: "text", text: "a" }, { type: "tool", id: "c", name: "read", state: {} }, { type: "text", text: "b" }] })).toBe("a\nb");
+  expect(messageText({ type: "shell", command: "ls" })).toBe("");
+});
+
+test("toolResultText: text content joined, or the error's message", () => {
+  expect(toolResultText({ status: "completed", content: [{ type: "text", text: "a" }, { type: "file" }, { type: "text", text: "b" }] })).toEqual({ text: "a\nb", isError: false });
+  expect(toolResultText({ status: "error", error: { name: "E", message: "boom" } })).toEqual({ text: "boom", isError: true });
+  expect(toolResultText({ status: "error", error: "plain" })).toEqual({ text: "plain", isError: true });
 });
 
 test("extractUnits: user and assistant texts, tool calls with their output or error, and the files touched", () => {
@@ -29,26 +37,27 @@ test("extractUnits: user and assistant texts, tool calls with their output or er
   expect([...fileOps.written]).toEqual(["src/new.ts"]);
 });
 
-test("extractUnits: the history up to the last compaction summary is that summary", () => {
+test("extractUnits: the history up to the last completed compaction is its summary", () => {
   const { units, previousSummary } = extractUnits([
     user("first"),
-    assistant(["Old summary 1"], [], true),
+    compaction("Old summary 1"),
     user("second"),
-    assistant(["The earlier summary"], [], true),
+    compaction("The earlier summary"),
+    compaction("never finished", "failed"),
     user("third", true),
     user("fourth"),
     assistant(["Done."]),
   ]);
   expect(previousSummary).toBe("The earlier summary");
   expect(units.map((u) => u.text)).toEqual(["fourth", "Done."]);
-  expect(units[0]!.message).toBe(5);
+  expect(units[0]!.message).toBe(6);
   expect(extractUnits([]).units).toEqual([]);
 });
 
 test("recentTexts and lastUserMessages", () => {
   const messages = [user("first"), assistant(["Looking."]), user("second"), assistant(["Running", "the tests."])];
   expect(recentTexts(messages)).toEqual({ user: "second", assistant: "Running\nthe tests." });
-  // Assistant text from an earlier turn does not count; synthetic user parts are skipped.
+  // Assistant text from an earlier turn does not count; synthetic messages are skipped.
   expect(recentTexts([user("first"), assistant(["Looking."]), user("second")])).toEqual({ user: "second", assistant: "" });
   expect(recentTexts([user("real"), assistant(["Done."]), user("continue", true)])).toEqual({ user: "real", assistant: "Done." });
   expect(recentTexts([])).toEqual({ user: "", assistant: "" });
