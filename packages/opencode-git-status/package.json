@@ -1,0 +1,38 @@
+{
+  "name": "opencode-git-status",
+  "version": "0.1.0",
+  "description": "opencode shows the checkout's git status beside the prompt: branch, conflicts, uncommitted changes, ahead and behind.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./tui": "./src/tui.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "git",
+    "status"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justmytwospence/opencode-plugins",
+    "directory": "packages/opencode-git-status"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.0",
+    "@opentui/core": ">=0.4.5",
+    "@opentui/solid": ">=0.4.5",
+    "@types/node": "^22.20.4",
+    "solid-js": "^1.9.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.2"
+  }
+}

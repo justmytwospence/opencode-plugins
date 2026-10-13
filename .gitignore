@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+coverage/
+*.tsbuildinfo
+.vercel/
+.vercel
+site/dist/
+site/.astro/
+.env*
+.worktrees/
+.smoke/

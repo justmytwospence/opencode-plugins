@@ -1,0 +1,39 @@
+{
+  "name": "opencode-next-prompt",
+  "version": "0.1.0",
+  "description": "Suggests your next prompt after a run, Claude Code style: ghost text in the empty prompt, Tab to accept. Only when there is one obvious next step.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./server": "./src/server.ts",
+    "./tui": "./src/tui.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "jev"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justmytwospence/opencode-plugins",
+    "directory": "packages/opencode-next-prompt"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.0",
+    "@opentui/core": ">=0.4.5",
+    "@opentui/keymap": ">=0.4.5",
+    "@opentui/solid": ">=0.4.5",
+    "@types/node": "^22.20.4",
+    "solid-js": "^1.9.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.2"
+  }
+}

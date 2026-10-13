@@ -1,0 +1,23 @@
+{
+  "name": "@justmytwospence/opencode-plugins",
+  "version": "0.1.0",
+  "description": "A modular OpenCode 2 plugin suite: independently enabled components, one tested Git release.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justmytwospence/opencode-plugins"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "node scripts/test-contracts.mjs",
+    "check": "npm test && node scripts/check-components.mjs"
+  }
+}

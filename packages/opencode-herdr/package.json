@@ -1,0 +1,38 @@
+{
+  "name": "opencode-herdr",
+  "version": "0.1.0",
+  "description": "opencode inside herdr: interactive opencode children in herdr tabs, splits or worktrees, pending children, the session's title and model in herdr's sidebar, and PR status on spaces. The port of pi-herdr.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./server": "./src/server.ts",
+    "./tui": "./src/tui.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "herdr"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justmytwospence/opencode-plugins",
+    "directory": "packages/opencode-herdr"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.0",
+    "@types/node": "^22.20.4",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.2"
+  }
+}
