@@ -1,31 +1,20 @@
-// opencode-prose-width (TUI): wraps prose in the transcript at a readable measure while code
+// opencode-prose-width (terminal): wraps prose in the transcript at a readable measure while code
 // blocks and tables keep the full width of the terminal (patch.ts).
 //
 // The measure comes from PROSE_WIDTH, else `width` in ~/.config/agents/prose-width.json (shared
 // with the pi and Claude Code ports), else this plugin's `width` option, else 80. `0` or `off`
 // turns it off. `/prose-width` toggles it for the session.
 //
-// MarkdownRenderable is taken from opencode itself, the Bun virtual module
-// `opentui:runtime-module:@opentui/core`: a git install's own `@opentui/core` would be a second
-// copy whose class opencode never draws with.
+// MarkdownRenderable is OpenCode's own: the host rewrites this static `@opentui/core` import to
+// its runtime module, also inside a Git install, so the patch reaches the class OpenCode draws
+// every message with.
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { TuiPlugin } from "@opencode-ai/plugin/tui";
-import { DEFAULT_MEASURE, install, parseMeasure, setMeasure } from "./patch.js";
-
-const RUNTIME_MODULE = "opentui:runtime-module:";
-
-type Core = typeof import("@opentui/core");
-
-async function hostCore(): Promise<Core> {
-  try {
-    return (await import(RUNTIME_MODULE + encodeURIComponent("@opentui/core"))) as Core;
-  } catch {
-    return import("@opentui/core");
-  }
-}
+import { Plugin } from "@opencode/plugin/tui";
+import { MarkdownRenderable } from "@opentui/core";
+import { DEFAULT_MEASURE, install, parseMeasure, setMeasure } from "./patch.ts";
 
 export function configuredMeasure(option: unknown, env = process.env, home = homedir()): number {
   const fromEnv = parseMeasure(env.PROSE_WIDTH);
@@ -38,32 +27,28 @@ export function configuredMeasure(option: unknown, env = process.env, home = hom
   return parseMeasure(option) ?? DEFAULT_MEASURE;
 }
 
-const tui: TuiPlugin = async (api, options) => {
-  const { MarkdownRenderable } = await hostCore();
-  const configured = configuredMeasure((options as { width?: unknown } | undefined)?.width);
-  const state = install(MarkdownRenderable.prototype as never, configured);
-
-  const offToggle = api.keymap.registerLayer({
-    commands: [
-      {
-        namespace: "palette",
-        name: "prose-width.toggle",
-        title: "Toggle prose width",
-        category: "View",
-        slashName: "prose-width",
-        run: () => {
-          setMeasure(state, state.measure ? 0 : configured || DEFAULT_MEASURE);
-          api.renderer.requestRender();
-          api.ui.toast({ message: state.measure ? `prose wraps at ${state.measure} columns` : "prose width off", variant: "info" });
-          return true;
+export default Plugin.define({
+  id: "prose-width.tui",
+  setup(context) {
+    const configured = configuredMeasure((context.options as { width?: unknown }).width);
+    const state = install(MarkdownRenderable.prototype as never, configured);
+    context.keymap.layer(() => ({
+      mode: "global",
+      commands: [
+        {
+          id: "prose-width.toggle",
+          title: "Toggle prose width",
+          group: "View",
+          palette: true,
+          slash: { name: "prose-width" },
+          run: () => {
+            setMeasure(state, state.measure ? 0 : configured || DEFAULT_MEASURE);
+            context.renderer.requestRender();
+            context.ui.toast.show({ message: state.measure ? `prose wraps at ${state.measure} columns` : "prose width off", variant: "info" });
+          },
         },
-      },
-    ],
-  } as never);
-  api.lifecycle.onDispose(() => {
-    offToggle();
-    setMeasure(state, 0);
-  });
-};
-
-export default { id: "opencode-prose-width-tui", tui };
+      ],
+    }));
+    return () => setMeasure(state, 0);
+  },
+});

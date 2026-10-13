@@ -1,6 +1,6 @@
 # opencode-prose-width
 
-An [opencode](https://opencode.ai) TUI plugin that wraps prose in the transcript at a readable
+An [OpenCode 2](https://opencode.ai) terminal plugin that wraps prose in the transcript at a readable
 measure, 80 columns by default, while fenced code blocks and tables keep the full width of the
 transcript.
 
@@ -14,18 +14,17 @@ echo "a long command line keeps the whole width of the transcript, as code shoul
 
 ## How it works
 
-opencode draws every message with opentui's `MarkdownRenderable`, which keeps one child
+OpenCode draws every message with OpenTUI's `MarkdownRenderable`, which keeps one child
 renderable per top-level block: paragraph, heading, list, quote, code block, table. The plugin
 wraps the class's `updateBlocks`, which every content, streaming, style or table change goes
 through, and afterwards caps each prose block at the measure with yoga's `maxWidth`. Code
 blocks, tables and rules keep the full width; so does a list or quote holding a table or a code
 line longer than the measure.
 
-The class comes from opencode itself (the Bun virtual module
-`opentui:runtime-module:@opentui/core`), since a git install's own `@opentui/core` would be a
-second copy opencode never draws with. `updateBlocks` is internal to opentui, so an opentui
-release that renames it makes the plugin fail at load rather than misdraw. Tested with opencode
-1.18.29.
+The class is OpenCode's own: OpenCode rewrites the plugin's static `@opentui/core` import to its
+runtime module, so the patch reaches the class OpenCode draws with rather than a second copy.
+`updateBlocks` is internal to OpenTUI, so an OpenTUI release that renames it makes the plugin
+fail at load rather than misdraw. Tested with OpenCode 2.0.24.
 
 ## Settings
 
@@ -33,19 +32,20 @@ The measure is `PROSE_WIDTH`, else `width` in `~/.config/agents/prose-width.json
 pi-prose-width and claude-prose-width), else the plugin's `width` option, else 80. `0` or `off`
 turns it off. `/prose-width` toggles it for the session.
 
-```jsonc
-// ~/.config/opencode/tui.jsonc
+Terminal-only: list it in `~/.config/opencode/cli.json`, pinned to a suite commit.
+
+```json
 {
-  "plugin": [
-    "opencode-prose-width@github:justmytwospence/opencode-prose-width#<commit>"
+  "plugins": [
+    "opencode-prose-width@github:justmytwospence/opencode-plugins#<commit>::path:packages/opencode-prose-width"
   ]
 }
 ```
 
 ## Development
 
+Part of [opencode-plugins](https://github.com/justmytwospence/opencode-plugins); see its README.
+
 ```sh
 npm ci && npm run check
-printf '{"plugin":["opencode-prose-width@file:%s"]}' "$PWD" > /tmp/oc-tui.json
-OPENCODE_TUI_CONFIG=/tmp/oc-tui.json opencode
 ```

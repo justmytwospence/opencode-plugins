@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { MarkdownRenderable, SyntaxStyle } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
-import { describe, expect, test } from "vitest";
-import { holdsWideContent, install, parseMeasure, setMeasure, widthFor } from "../src/patch.js";
-import { configuredMeasure } from "../src/tui.js";
+import { describe, expect, test, vi } from "vitest";
+import { holdsWideContent, install, parseMeasure, setMeasure, widthFor } from "../src/patch.ts";
+vi.mock("@opencode/plugin/tui", () => ({ Plugin: { define: (p: unknown) => p } }));
+const { configuredMeasure } = await import("../src/tui.ts");
 
 const LONG = "word ".repeat(40).trim();
 const LONG_CODE = `echo ${"x".repeat(110)}`;
