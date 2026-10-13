@@ -1,0 +1,43 @@
+{
+  "name": "opencode-sticky-last-prompt",
+  "version": "0.1.0",
+  "description": "Pins the last user prompt that scrolled out of view to the top of OpenCode's transcript; click it to jump back.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./tui": "./tui.ts"
+  },
+  "files": [
+    "tui.ts",
+    "src"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "sticky",
+    "prompt",
+    "scrollback"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justmytwospence/opencode-plugins",
+    "directory": "packages/opencode-sticky-last-prompt"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
+    "@types/node": "^22.20.4",
+    "solid-js": "1.9.12",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.2"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "opencode-markdown-extras",
+  "version": "0.1.0",
+  "description": "Extra Markdown rendering for OpenCode's transcript: class and ER diagrams and Mermaid dialect fences as text diagrams, GitHub admonitions as labeled quotes, circled numbers and multi-line link labels made safe.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./tui": "./tui.ts"
+  },
+  "files": [
+    "tui.ts",
+    "src"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "markdown",
+    "mermaid"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justmytwospence/opencode-plugins",
+    "directory": "packages/opencode-markdown-extras"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "grok-mermaid": "^0.2.3"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
+    "@types/node": "^22.20.4",
+    "solid-js": "1.9.12",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.2"
+  }
+}
