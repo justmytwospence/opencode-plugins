@@ -1,36 +1,48 @@
 # opencode-herdr
 
-opencode's own [herdr](https://herdr.dev) additions, beside the integration herdr installs
+OpenCode's own [herdr](https://herdr.dev) additions, beside the integration herdr installs
 (`herdr integration install opencode`, which reports the pane's state and session). The port of
-[pi-herdr](https://github.com/justmytwospence/pi-herdr); `src/core` and `test/core` are shared
-with it verbatim.
+[pi-herdr](https://github.com/justmytwospence/pi-plugins/tree/main/packages/pi-herdr) to the
+OpenCode 2 plugin API; `src/core` is shared with it.
 
-## Server: herdr children and `$bg`
+OpenCode 2 runs every plugin's server half once, in one background service shared by all
+terminals and herdr panes, so the component has two halves that talk through plugin RPC: the
+server half (the `herdr_child` tool, the `herdr` RPC, the children bookkeeping) and the terminal
+half (everything about the pane it runs in).
 
-The `herdr_child` tool starts an interactive opencode in its own herdr pane and gives it a task:
+## Server: `herdr_child` and the `herdr` RPC
+
+The `herdr_child` tool starts an interactive OpenCode in its own herdr pane and gives it a task:
 
 | action | |
 |---|---|
-| `spawn` | `task`, optional `name`, `where` (`tab` default, `split` beside this pane, or `worktree` with `branch`), `model` (default: this session's latest), `focus` |
+| `spawn` | `task`, optional `name`, `where` (`tab` default, `split` beside this pane, or `worktree` with `branch`), `model` (`provider/model[#variant]`, default: this session's), `focus` |
 | `send` | `name`, `message`: ask it something more |
 | `read` | `name`: its last reply, or its screen while it works |
 | `list` | this session's children and their state |
 | `interrupt` | `name`: Escape, ending its current turn |
 | `close` | `name`: close its pane (the session stays; a worktree's checkout and branch stay) |
 
-`where: "worktree"` runs `worktree new <branch> --no-open` (checkouts in `<project>/.worktrees/`)
-and opens the checkout through herdr as the repo's grouped child space, with the child in it.
+The OpenCode 2 TUI takes no `--model`, so the child's session is created first by the server
+half, in the child's directory and with the model, and the child starts on it with `opencode
+--session <id>`. `where: "worktree"` runs `worktree new <branch> --no-open` (checkouts in
+`<project>/.worktrees/`) and opens the checkout through herdr as the repo's grouped child space,
+with the child in it.
 
 The child is told it is a child and that its final reply goes back. Each reply to a message the
-parent sent (the task, or `send`) arrives in the parent session as a new prompt (`Herdr child
-"x" replied: ...`), which starts a turn. The reply is the last assistant text of the session herdr's
-opencode integration reports for the child's pane, read through this server's client (sessions
-share opencode's database), else through `opencode export`. Turns the user starts by typing in the
-child's pane are not sent back. While a reply is pending the pane token `$bg` names the child
-(`child auth-fix`). Children are saved per parent session in
-`~/.local/share/opencode-herdr/children/<session>.json`, so pending replies survive a restart.
+parent sent (the task, or `send`) arrives in the parent session as a new queued prompt (`Herdr
+child "x" replied: ...`), which starts a turn. The reply is the last assistant text of the
+child's session, read through the shared server, else through `opencode session export`. Turns
+the user starts by typing in the child's pane are not sent back. While a reply is pending, the
+root session's pane token `$bg` names the child (`child auth-fix`). Children are saved per parent
+session in the plugin's storage, so `list`, `send` and pending replies survive a restart: polling
+resumes when a pane attaches for the session.
 
-Use a subagent (opencode's `task` tool) for delegated work that reports back to the parent, even
+The tool needs the session (or its root) open in OpenCode inside a herdr pane with this
+component's terminal half loaded; otherwise it fails with a clear message. A child of a session
+running with `--standalone` cannot be read by the shared service's server half.
+
+Use a subagent (OpenCode's `task` tool) for delegated work that reports back to the parent, even
 when long, multi-step, or parallel. Use a Herdr child only for an explicit interactive-session
 request or a clear persistent, human-led handoff that the user will continue independently.
 Duration and a hypothetical desire to watch are not reasons to create an interactive session.
@@ -46,50 +58,50 @@ Tabs and splits share files and are not isolated parallel editors. Never create 
 checkout merely because work is delegated, long, or parallel. Preserve focus unless asked to
 switch.
 
-Only a server in a herdr pane does anything: opencode's TUI runs its server in-process, so it sees
-`HERDR_PANE_ID`. A shared server (`opencode serve`, or the one behind `opencode attach`) cannot tell
-which pane asked and registers nothing.
+**The `herdr` RPC** (`src/herdr-rpc.ts`) is how other components report to herdr without herdr
+code of their own, the role pi-herdr's event bus plays for Pi: `token { sessionID, key, value?,
+ttlMs? }`, `notify { sessionID, title, body?, sound?, unlessFocused? }`, `zoom { sessionID,
+holder, active }`, `state { sessionID }`. Calls are per session; the server half stores the tokens
+and re-emits every call as an event, and the terminal half showing that session's family applies
+it to its pane. It emits `ready` once registered, so a component whose calls failed earlier
+(`rpc.unavailable`: opencode-herdr absent) can resend its state. Components copy the contract file
+verbatim and import nothing else of opencode-herdr.
 
-## TUI: title, model and `$pr`
+## Terminal: title, model, tokens and `$pr`
 
-- **The pane's title** and the token `$task`: the title opencode writes for the session on screen.
-- **The displayed agent name**: `opencode opus-5-5:high` (model and variant of the latest message),
-  which the `agent` row token shows. Both apply only while herdr's opencode integration holds the
-  pane.
+- **The pane's title** and the token `$task`: the title OpenCode writes for the session on screen.
+- **The displayed agent name**: `opencode opus-4-6:high` (the prompt's model and variant), which
+  the `agent` row token shows. Both apply only while herdr's OpenCode integration holds the pane.
+- **Tokens, notifications and zoom** from the `herdr` RPC for the shown session's family
+  (fetched with `state` when the pane starts showing a session).
 - **`$pr` space token**: the branch's pull request from `gh pr view` (`#123 ✓ approved`,
   `#123 draft …`, `#123 merged`), checked at start, after each turn and every 3 minutes. A space
-  shows it only while an opencode (or pi with pi-herdr) runs in it. `PI_HERDR_PR=0` turns it off.
+  shows it only while an OpenCode (or pi with pi-herdr) runs in it. `PI_HERDR_PR=0` turns it off.
 
-opencode has no event bus between plugins, so there is no counterpart to pi-herdr's bridge:
-opencode-cache-guard and opencode-marimo keep their own herdr reporters.
+Herdr's own OpenCode integration owns the pane's working, blocked and idle state, including
+pending permission requests and question forms, so this component reports no state.
 
 ## Install
 
-The server and TUI halves are two exports of one package. Pin the same commit in both configs:
+In `opencode.jsonc`, pinned to a suite commit (the terminal half loads with it):
 
 ```jsonc
-// opencode.jsonc
-"plugin": ["opencode-herdr@github:justmytwospence/opencode-herdr#<commit>"]
-
-// tui.jsonc
-"plugin": ["opencode-herdr@github:justmytwospence/opencode-herdr#<commit>"]
+"plugins": [
+  "opencode-herdr@github:justmytwospence/opencode-plugins#<commit>::path:packages/opencode-herdr"
+]
 ```
 
-Tested with opencode 1.18.29 and herdr 0.9.3.
+Tested with OpenCode 2.0.24 and herdr 0.9.3. Worktree children need the `worktree` helper;
+`$pr` needs `gh`.
 
 ## Development
 
+Part of [opencode-plugins](https://github.com/justmytwospence/opencode-plugins); see its README.
+
 ```sh
 npm ci
-npm run check                                              # typecheck + unit tests
-node --experimental-strip-types test/live-child.mts tab    # inside herdr: a real child, PONG
+npm run check                                               # typecheck and unit tests
+node --experimental-strip-types test/live-chain.mts         # both halves against a fake herdr, a scratch
+                                                            # OpenCode and the mock provider (needs tmux)
+node --experimental-strip-types test/live-child.mts tab     # inside herdr: a real child, PONG
 ```
-
-To try a checkout in a real opencode, point both configs at it:
-
-```sh
-printf '{"plugin":["opencode-herdr@file:%s"]}' "$PWD" > /tmp/oc-herdr.json
-OPENCODE_CONFIG=/tmp/oc-herdr.json OPENCODE_TUI_CONFIG=/tmp/oc-herdr.json opencode
-```
-
-MIT licensed.

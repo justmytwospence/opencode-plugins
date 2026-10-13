@@ -40,8 +40,11 @@ export interface ChildRecord {
 export interface ChildAgent {
   /** herdr's agent kind (`agent.start`), also the session kind: "pi", "opencode". */
   kind: string;
-  /** Command-line arguments for the child, after herdr's canonical executable. */
-  args(opts: SpawnOptions, name: string): string[];
+  /**
+   * Command-line arguments for the child, after herdr's canonical executable. `opts.cwd` is the
+   * child's directory (a worktree's checkout for where=worktree). May prepare the session first.
+   */
+  args(opts: SpawnOptions, name: string): string[] | Promise<string[]>;
   /** The child's last reply, read from its session, or undefined. */
   reply(rec: ChildRecord): Promise<string | undefined>;
 }
@@ -206,7 +209,7 @@ export class Children {
     }
 
     const { agent } = this.deps;
-    const args = agent.args(opts, name);
+    const args = await agent.args({ ...opts, cwd }, name);
     // A new pane's shell takes a moment to reach its prompt (agent_pane_busy until then).
     let start = await call("agent.start", { name, kind: agent.kind, pane_id: paneId, args, timeout_ms: 90_000 }, 95_000);
     for (let i = 0; start.error?.code === "agent_pane_busy" && i < 30; i++) {

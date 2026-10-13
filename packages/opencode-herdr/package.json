@@ -1,14 +1,17 @@
 {
   "name": "opencode-herdr",
   "version": "0.1.0",
-  "description": "opencode inside herdr: interactive opencode children in herdr tabs, splits or worktrees, pending children, the session's title and model in herdr's sidebar, and PR status on spaces. The port of pi-herdr.",
+  "description": "OpenCode inside herdr: interactive OpenCode children in herdr tabs, splits or worktrees, pending children, the session's title and model in herdr's sidebar, PR status on spaces, and the herdr RPC other components report through. The port of pi-herdr.",
   "type": "module",
   "license": "MIT",
   "exports": {
-    "./server": "./src/server.ts",
-    "./tui": "./src/tui.ts"
+    ".": "./index.ts",
+    "./tui": "./tui.ts",
+    "./rpc": "./src/herdr-rpc.ts"
   },
   "files": [
+    "index.ts",
+    "tui.ts",
     "src"
   ],
   "keywords": [
@@ -26,12 +29,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {
-    "@opencode-ai/plugin": "^1.18.0"
-  },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.0",
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
     "@types/node": "^22.20.4",
+    "solid-js": "1.9.12",
     "typescript": "^5.9.0",
     "vitest": "^5.0.2"
   }
