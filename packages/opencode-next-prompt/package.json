@@ -1,14 +1,17 @@
 {
   "name": "opencode-next-prompt",
   "version": "0.1.0",
-  "description": "Suggests your next prompt after a run, Claude Code style: ghost text in the empty prompt, Tab to accept. Only when there is one obvious next step.",
+  "description": "Suggests your next prompt after a turn, Claude Code style: ghost text in the empty prompt, Tab to accept. Only when there is one obvious next step.",
   "type": "module",
   "license": "MIT",
   "exports": {
-    "./server": "./src/server.ts",
-    "./tui": "./src/tui.ts"
+    ".": "./index.ts",
+    "./tui": "./tui.ts",
+    "./rpc": "./src/rpc.ts"
   },
   "files": [
+    "index.ts",
+    "tui.ts",
     "src"
   ],
   "keywords": [
@@ -27,12 +30,13 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.18.0",
-    "@opentui/core": ">=0.4.5",
-    "@opentui/keymap": ">=0.4.5",
-    "@opentui/solid": ">=0.4.5",
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
     "@types/node": "^22.20.4",
-    "solid-js": "^1.9.0",
+    "solid-js": "1.9.12",
     "typescript": "^5.9.0",
     "vitest": "^5.0.2"
   }

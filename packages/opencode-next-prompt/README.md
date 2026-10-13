@@ -1,75 +1,119 @@
 # opencode-next-prompt
 
-An [opencode](https://opencode.ai) plugin that suggests the prompt you would most likely send next,
-like Claude Code's prompt suggestions: after a turn, the suggestion is the ghost text of the empty
-prompt, `Tab` (or `Right`) fills it in (it is not sent), and typing hides it.
+An [OpenCode 2](https://opencode.ai) plugin that suggests the prompt you would most likely send
+next, like Claude Code's prompt suggestions: after a turn, the suggestion is the ghost text of
+the empty prompt, `Tab` (or `Right`) fills it in (it is never sent), and typing hides it. The
+port of
+[pi-next-prompt](https://github.com/justmytwospence/pi-plugins/tree/main/packages/pi-next-prompt).
+
+Example:
 
 ```
-┃  Ask anything… "Do step 2: add an assert for third in test.js"
 ┃
-┃  Build · Claude Sonnet 5.5 Anthropic · medium
+┃  Add a usage section to README.md  Tab to accept
+┃
+┃  Build · Claude Opus 4.6 Anthropic
 ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-   Tab to accept the suggestion
 ```
 
 It only appears when there is one obvious next step. Most turns show nothing.
 
 ## How it works
 
-- **Server half.** `experimental.chat.system.transform` adds one short system block (about 150
-  tokens, after the main prompt so its cache prefix is unchanged) asking the model to end its final
-  message with a `<next>…</next>` line only when exactly one concrete next step is obvious.
-  Hidden agents (title, summary, compaction) and subagent sessions do not get it.
-  `experimental.text.complete` removes the line from every finished text part, so it is never
-  stored and never sent back to the model. No extra model request.
-- **TUI half.** It reads the line from the streamed text (`message.part.delta`), and when the
-  session goes idle after a turn that did not fail or get aborted, asks
-  [Jev](https://docs.typesafe.ai) whether the suggestion is a concrete, non-generic next step that
-  follows from the answer and is not done yet (shown at probability >= 0.6; shown anyway when Jev
-  is unavailable or `TYPESAFE_API_KEY` is unset). It renders the session prompt itself (the
-  `session_prompt` slot) with the host's props, adding only the placeholder and the hint; the
-  `session_prompt_right` slot is kept for other plugins. Each session has its own suggestion; a
-  new prompt, a busy session or compaction drops it.
-- `Tab`/`Right` are taken only while a suggestion shows in an empty, focused prompt (a
-  high-priority keymap layer); otherwise they do what they always do.
-- While the answer streams, the `<next>` line is visible for a moment before the finished text
-  replaces it.
+**Server half.** The session's `context` hook adds one short system part (about 150 tokens,
+after OpenCode's own prompt so its cache prefix is unchanged) on every primary model request,
+asking the model to end its final message with a fenced code block whose info string is `next`,
+only when exactly one concrete next step is obvious. The same hook removes the `next` blocks of
+earlier answers from the request's assistant messages, so suggestions never go back to the
+model; it runs on every request, so a request is the same whether a block was stripped before
+or not, and prompt caches survive. Title, compaction and summary requests have their own hooks
+and never get the instruction; subagent sessions (those with a parent) do not either. No extra
+model request.
 
-Owning `session_prompt` means another plugin that also replaces that slot would conflict with it.
+The server half also vets a suggestion with [Jev](https://docs.typesafe.ai) through the `vet` RPC
+method (that is where `TYPESAFE_API_KEY` lives, and one verdict serves every terminal showing
+the session): is the suggestion a concrete, non-generic next step that follows from the answer
+and is not done yet? Shown at probability >= 0.6; shown anyway when Jev is off, unavailable,
+times out or `TYPESAFE_API_KEY` is unset, since the model already abstains on its own. Jev
+receives the suggestion, up to 1,500 characters of the last user prompt and up to 2,000
+characters from the end of the answer.
+
+**Terminal half.** It reads the block from the finished answer (`session.text.ended`), and once
+the run has succeeded (not failed or interrupted) asks the server to vet it, then shows it as
+the placeholder of OpenCode's prompt editor (the focused `TextareaRenderable`), with a `Tab to
+accept` hint. A textarea draws its placeholder only while it is empty, so typing hides the
+suggestion and clearing the prompt brings it back. `Tab`/`Right` are taken only while a
+suggestion shows in an empty, focused prompt; otherwise they do what they always do. Accepting
+fills the prompt and moves the cursor to the end; it does not submit. Each session has its own
+suggestion, kept while you switch sessions; a new run, a failed or interrupted run,
+compaction or deleting the session drops it.
+
+In the transcript the `next` block draws nothing: the terminal half registers a code block
+renderer for the `next` info string (`markdown.registerCodeBlockRenderer`), so the answer ends
+where the model's prose ends.
 
 ## Install
 
-Both halves, at the same commit: the server in `opencode.jsonc`, the TUI in `tui.jsonc`.
+In `opencode.jsonc`, pinned to a suite commit (the terminal half loads with it):
 
 ```jsonc
-// opencode.jsonc and tui.jsonc
-"plugin": ["opencode-next-prompt@github:justmytwospence/opencode-next-prompt#<commit>"]
+"plugins": [
+  "opencode-next-prompt@github:justmytwospence/opencode-plugins#<commit>::path:packages/opencode-next-prompt"
+]
 ```
+
+Optional: `TYPESAFE_API_KEY` in OpenCode's environment for Jev vetting (a paid classifier call
+per candidate suggestion; there is none when the model gives no candidate). Tested with
+OpenCode 2.0.24.
 
 ## Commands
 
-- `/next-prompt`: toggles suggestions (kept across restarts) and shows the last suggestion with
-  Jev's verdict.
+- `/next-prompt` (also in the command palette): toggles suggestions, kept across restarts, and
+  shows the last suggestion with Jev's verdict in a toast.
 
 ## Settings
 
-Later layers win: the shared `~/.config/agents/next-prompt.json` (`$XDG_CONFIG_HOME` honored, shared
-with the pi port), the plugin's options in `opencode.jsonc`/`tui.jsonc`,
-`<project>/.agents/next-prompt.json`, then `<project>/.opencode/next-prompt.json`.
+Settings live in a shared, harness-neutral place that the pi port reads as well:
+`~/.config/agents/next-prompt.json` (under `$XDG_CONFIG_HOME` when set) for you, and
+`<project>/.agents/next-prompt.json` for a project. OpenCode-only overrides go in the plugin's
+options in `opencode.jsonc` or in `<project>/.opencode/next-prompt.json`. The layers merge in
+this order, later winning, objects deep-merged and arrays and scalars replaced: built-in
+defaults, `~/.config/agents/next-prompt.json`, the `opencode.jsonc` options,
+`<project>/.agents/next-prompt.json`, `<project>/.opencode/next-prompt.json`. The files are
+re-read when they change. All keys are optional; the defaults:
 
 ```json
 {
   "enabled": true,
+  "agents": [],
   "acceptKeys": ["tab", "right"],
   "maxChars": 110,
   "jev": { "enabled": true, "model": "jev-latest", "timeoutMs": 1500, "threshold": 0.6 }
 }
 ```
 
-`acceptKeys` are read when opencode starts.
+- `agents`: agents whose sessions get the instruction (`[]` is every agent; subagent sessions
+  never do). Pi-only keys such as `jev.provider` are not read.
+- `acceptKeys`: OpenCode key names (`tab`, `right`, `ctrl+f`). Read when the terminal starts;
+  the other settings are re-read at each request.
+- `maxChars`: a longer suggestion is stripped from the request but not offered.
+
+## Differences from pi-next-prompt
+
+- The suggestion is a fenced `next` code block, not a `<next>` line: OpenCode 2 has no hook
+  that rewrites a finished text part, so the block stays in the stored message, and a code block
+  is the one markdown node a terminal plugin can hide when the transcript is drawn. The server
+  strips old blocks from each request instead. `opencode run` (no terminal) prints the block.
+- Jev's verdict is cached per message on the server, so several terminals showing one session
+  ask once.
+- `/next-prompt` toggles; there are no `on`/`off`/`status` arguments.
+- Clearing on a model change or tree navigation has no OpenCode equivalent; a new run clears.
 
 ## Development
 
+Part of [opencode-plugins](https://github.com/justmytwospence/opencode-plugins); see its README.
+
 ```sh
-npm run check   # typecheck and unit tests
+npm ci
+npm run check   # typecheck and tests
 ```
