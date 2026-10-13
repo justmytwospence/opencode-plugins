@@ -66,7 +66,9 @@ if (tui) {
   tmux('kill-server');
   tmux('new-session', '-d', '-s', session, '-x', '200', '-y', '60',
     'env', ...Object.entries(env).filter(([k]) => k.startsWith('XDG_')).map(([k, v]) => `${k}=${v}`), binary, '--standalone', realpathSync(project));
-  await sleep(15_000);
+  // Wait for the prompt (plugins load before it is drawn), then a little for late CLI halves.
+  for (let waited = 0; waited < 45_000 && !/ctrl\+p commands/.test(tmux('capture-pane', '-p', '-t', session).stdout ?? ''); waited += 500) await sleep(500);
+  await sleep(3_000);
   tmux('send-keys', '-t', session, '/plugins');
   await sleep(1_000);
   tmux('send-keys', '-t', session, 'Enter');
