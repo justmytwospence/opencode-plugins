@@ -1,0 +1,35 @@
+  <section class="pp-hero" aria-labelledby="_top">
+    <div class="pp-hero-copy">
+      <p class="pp-eyebrow"><span class="pp-rule" aria-hidden="true"></span> Personal tools. Built for OpenCode 2.</p>
+      <h1 id="_top" data-page-title>A more <em>considered</em> coding session.</h1>
+      <p class="pp-deck">Keep the work moving, the context visible, and the decisions yours. A suite of 16 focused OpenCode 2 plugins by Spencer Boucher, each one installed on its own.</p>
+      <div class="pp-actions">
+        <a class="pp-button" href="/guides/install/">Install your selection <span aria-hidden="true">→</span></a>
+        <a class="pp-text-link" href="/guides/overview/">Explore the components <span aria-hidden="true">→</span></a>
+      </div>
+      <div class="pp-install">
+        <span class="pp-install-label">One entry per component in <code>opencode.jsonc</code> <code>plugins</code></span>
+        <code>"opencode-bg@github:justmytwospence/opencode-plugins#&lt;commit&gt;::path:packages/opencode-bg"</code>
+        <span class="pp-install-note">Pin every component to the same full commit hash. Terminal-only components go in <code>cli.json</code> instead.</span>
+      </div>
+    </div>
+    <figure class="pp-terminal-figure">
+      <div class="pp-terminal" role="img" aria-label="Illustrative OpenCode session: a background test job, a delegated review, and cache and git status in the footer. Example only, not a screenshot.">
+        <div class="pp-terminal-bar"><span class="pp-terminal-mark" aria-hidden="true">›_</span><span>opencode / a working session</span><span class="pp-terminal-badge">EXAMPLE</span></div>
+        <div class="pp-terminal-body" aria-hidden="true">
+          <div class="pp-term-label">YOU</div>
+          <p class="pp-term-prompt">Run the tests. While they work,<br />review the edge cases.</p>
+          <div class="pp-term-label pp-term-agent">BUILD</div>
+          <p>I'll keep the test job in the background<br class="pp-wide-break" /> and delegate a focused review.</p>
+          <div class="pp-term-tool"><span>bg_run</span><span class="pp-term-muted">job · tests</span></div>
+          <div class="pp-term-tool"><span>delegate</span><span class="pp-term-muted">review edge cases</span></div>
+          <div class="pp-term-divider"></div>
+          <div class="pp-term-row"><span class="pp-term-active">│</span><span>tests</span><span class="pp-term-muted">running</span></div>
+          <div class="pp-term-row"><span class="pp-term-active">│</span><span>review edge cases · general</span><span class="pp-term-muted">running</span></div>
+          <div class="pp-term-editor"><span>›</span><span class="pp-term-cursor"></span></div>
+          <div class="pp-term-status"><span>~/code/app:main <b>*</b> ↑1 · 1 shell · cache 4:12</span><span>auto mode on</span></div>
+        </div>
+      </div>
+      <figcaption><span class="pp-figure-number">FIG. 01</span> An illustrative session, not a screenshot. Layout and values are examples.</figcaption>
+    </figure>
+  </section>

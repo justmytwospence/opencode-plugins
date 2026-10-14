@@ -1,0 +1,37 @@
+---
+title: A small toolkit for your OpenCode
+description: Explore all 16 OpenCode Plugins components by workflow, and choose what belongs in your sessions.
+---
+import Catalog from "../../../components/Catalog.astro";
+
+OpenCode Plugins is Spencer Boucher's suite of plugins for [OpenCode 2](https://opencode.ai), ported from [Pi Plugins](https://github.com/justmytwospence/pi-plugins) where OpenCode's plugin API allows. The collection focuses on the working session: keeping background tasks visible, delegating bounded work, reviewing what changed, understanding context and cost, and improving the terminal.
+
+This site documents the **OpenCode 2 suite**. The components target the OpenCode 2 plugin API only; they are not OpenCode 1 (`@opencode-ai/plugin`) plugins, and the retired standalone `opencode-*` repositories are not maintained alongside them.
+
+## How a component is built
+
+Every component is one package under `packages/<name>` with up to two halves:
+
+- A **server half** (`index.ts`) that runs once in OpenCode's shared background service: tools, hooks on model requests and permissions, settings.
+- A **terminal half** (`tui.ts`) that runs in each terminal: footer and sidebar slots, dialogs, panels, slash and palette commands.
+
+OpenCode loads a component's terminal half automatically when the component is in `opencode.jsonc`. Four components are terminal-only and go in `cli.json`: diff review, markdown extras, prose width and the sticky prompt. The two halves talk through OpenCode's plugin RPC, never through files or ports.
+
+## Choose a starting point
+
+- **A quieter transcript:** try [prose width](/plugins/opencode-prose-width/), [markdown extras](/plugins/opencode-markdown-extras/) or the [sticky prompt](/plugins/opencode-sticky-last-prompt/). They are terminal-only and need nothing else.
+- **Long-running development:** use [background jobs](/plugins/opencode-bg/) and the [delegate tool](/plugins/opencode-subagents/); add [herdr](/plugins/opencode-herdr/) for interactive children in their own panes.
+- **Changes worth checking:** review the last turns with [diff review](/plugins/opencode-diff-review/), and let the [tool gate](/plugins/opencode-tool-gate/) decide which calls need you.
+- **A large conversation:** start with [cache guard](/plugins/opencode-cache-guard/)'s hold and clock and the [context breakdown](/plugins/opencode-context/). Add classifier features only after reading their cost and data flow.
+
+[Install and select](/guides/install/) explains the one-entry-per-component install. Each component is enabled on its own; one Git commit versions the whole suite.
+
+## Browse the collection
+
+<Catalog />
+
+## What this collection is not
+
+The tool gate is an approval policy, not a sandbox. Cache estimates are not billing statements. Classifier judgments are probabilistic. Three terminal components rely on OpenTUI internals that are not plugin API and fail at load, or stay hidden, when a release changes them.
+
+Read [requirements and costs](/guides/requirements/) before turning on integrations, [built into OpenCode 2](/guides/built-in/) for the Pi components that were not ported, and [troubleshooting](/guides/troubleshooting/) when the shared server or a command does not behave.
