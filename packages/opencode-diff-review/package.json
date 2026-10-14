@@ -1,0 +1,41 @@
+{
+  "name": "opencode-diff-review",
+  "version": "0.1.0",
+  "description": "Review what the agent changed in OpenCode's terminal: a diff panel with vim keys, line comments and suggested edits sent back to the agent as one message.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./tui": "./tui.ts"
+  },
+  "files": [
+    "tui.ts",
+    "src"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "diff",
+    "code-review"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justmytwospence/opencode-plugins",
+    "directory": "packages/opencode-diff-review"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
+    "@types/node": "^22.20.4",
+    "solid-js": "1.9.12",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.2"
+  }
+}
