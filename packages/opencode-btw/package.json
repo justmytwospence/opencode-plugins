@@ -1,0 +1,44 @@
+{
+  "name": "opencode-btw",
+  "version": "0.1.0",
+  "description": "Side conversations in OpenCode: /btw asks a question in a separate session shown in a side panel while the main agent keeps working, then hands the thread back.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.ts",
+    "./rpc": "./src/rpc.ts"
+  },
+  "files": [
+    "index.ts",
+    "tui.ts",
+    "src",
+    "skills"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "side-conversation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justmytwospence/opencode-plugins",
+    "directory": "packages/opencode-btw"
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/theme": "2.0.24",
+    "@opentui/core": "0.5.14",
+    "@opentui/solid": "0.5.14",
+    "@types/node": "^22.20.4",
+    "solid-js": "1.9.12",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.2"
+  }
+}
