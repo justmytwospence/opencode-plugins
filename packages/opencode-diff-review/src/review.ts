@@ -1,4 +1,4 @@
-// What a review compares, without OpenCode: the scope words `/review` accepts, and the range of
+// What a review compares, without OpenCode: the scope words `/diff-review` accepts, and the range of
 // turns a session scope asks OpenCode's `session.diff` for. OpenCode snapshots the working tree
 // around every turn (the messages between one idle marker and the next), so a scope over turns
 // is a pair of user messages: the one whose turn starts the range and the one whose turn ends
@@ -91,7 +91,7 @@ export function relativeTime(ms: number, now = Date.now()): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
-/** The scope `/review` opens with: everything unreviewed when the session has turns, else uncommitted changes. */
+/** The scope `/diff-review` opens with: everything unreviewed when the session has turns, else uncommitted changes. */
 export function defaultScope(users: readonly UserMessage[]): ScopeRequest {
   return users.length > 0 ? { kind: "unreviewed" } : { kind: "head" };
 }

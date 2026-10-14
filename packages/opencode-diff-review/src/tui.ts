@@ -1,4 +1,4 @@
-// opencode-diff-review (terminal): `/review` opens a session panel with the diff of what the
+// opencode-diff-review (terminal): `/diff-review` opens a session panel with the diff of what the
 // agent changed (every turn since your last review mark by default; also the last turn, the
 // whole session, the working tree against HEAD or the base branch), to read with vim keys and
 // annotate: `c` comments on a line, a selection, a hunk or a file, `s` suggests a replacement
@@ -596,14 +596,14 @@ export default Plugin.define({
         }),
     });
 
-    /** The scope `/review <args>` asked for, taken by the panel when it opens. */
+    /** The scope `/diff-review <args>` asked for, taken by the panel when it opens. */
     let pendingScope: ScopeRequest | undefined;
     const open = (input?: string) => {
       if (!sessionID()) {
         context.ui.toast.show({ message: "review: open a session first", variant: "warning" });
         return;
       }
-      const args = (input ?? "").replace(/^\/review\s*/u, "");
+      const args = (input ?? "").replace(/^\/(?:diff-review|dr)\s*/u, "");
       const req = parseScopeArgs(args);
       if (args.trim() && !req) {
         context.ui.toast.show({ message: `review: unknown scope "${args.trim()}"; use unreviewed, turn [n], session, head or branch`, variant: "warning" });
