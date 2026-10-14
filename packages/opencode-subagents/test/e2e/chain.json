@@ -1,0 +1,7 @@
+[
+  { "text": "title" },
+  { "tool": "delegate", "input": { "chain": [ { "task": "Step one: list the files", "label": "List" }, { "task": "Step two: given this listing:\n{previous}\nsummarize it", "label": "Summarize" } ] } },
+  { "text": "STEP-ONE-OUTPUT README.md" },
+  { "text": "STEP-TWO-OUTPUT one file" },
+  { "text": "parent final after chain" }
+]

@@ -1,0 +1,7 @@
+[
+  { "text": "title" },
+  { "tool": "delegate", "input": { "async": true, "task": "Count the files", "agent": "general", "variant": "low" } },
+  { "text": "ASYNC-CHILD-OUTPUT 1 file" },
+  { "text": "parent after start" },
+  { "text": "parent final after async result" }
+]

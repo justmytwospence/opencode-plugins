@@ -15,8 +15,8 @@ const components = readdirSync(resolve(root, 'packages'), { withFileTypes: true 
 
 // Helper copies that must not drift. A component that diverges on purpose leaves its group.
 const identical = [
-  ['opencode-auto-effort', 'opencode-copy', 'opencode-next-prompt', 'opencode-tool-gate'].map(p => `packages/${p}/src/jev.ts`),
-  ['opencode-auto-effort', 'opencode-copy', 'opencode-next-prompt', 'opencode-tool-gate'].map(p => `packages/${p}/src/settings.ts`),
+  ['opencode-auto-effort', 'opencode-copy', 'opencode-next-prompt', 'opencode-subagents', 'opencode-tool-gate'].map(p => `packages/${p}/src/jev.ts`),
+  ['opencode-auto-effort', 'opencode-copy', 'opencode-next-prompt', 'opencode-subagents', 'opencode-tool-gate'].map(p => `packages/${p}/src/settings.ts`),
   ['opencode-auto-effort', 'opencode-status-footer'].map(p => `packages/${p}/src/limits.ts`),
   ['opencode-bg', 'opencode-cache-guard', 'opencode-herdr', 'opencode-marimo'].map(p => `packages/${p}/src/herdr-rpc.ts`),
 ];

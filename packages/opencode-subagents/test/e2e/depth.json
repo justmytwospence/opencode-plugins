@@ -1,0 +1,8 @@
+[
+  { "text": "title" },
+  { "tool": "delegate", "input": { "task": "Level one task", "agent": "general" } },
+  { "tool": "delegate", "input": { "task": "Level two task", "agent": "general" } },
+  { "text": "GRANDCHILD reply" },
+  { "text": "CHILD reply" },
+  { "text": "parent final" }
+]

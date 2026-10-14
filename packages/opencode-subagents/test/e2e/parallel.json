@@ -1,0 +1,7 @@
+[
+  { "text": "title" },
+  { "tool": "delegate", "input": { "tasks": [ { "task": "Count the files in the repo", "label": "Count files" }, { "task": "Read README.md and summarize it", "agent": "explore" } ] } },
+  { "text": "REPLY-ALPHA: there are 1 files" },
+  { "text": "REPLY-BETA: the README says scratch project" },
+  { "text": "parent final: both children answered" }
+]

@@ -1,0 +1,6 @@
+[
+  { "text": "title" },
+  { "tool": "delegate", "input": { "worktree": true, "task": "Add a line to README.md", "label": "Readme edit", "agent": "general" } },
+  { "text": "WORKTREE-CHILD done" },
+  { "text": "parent final after worktree" }
+]
